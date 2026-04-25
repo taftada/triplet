@@ -92,6 +92,7 @@ const jobs = {
   banker: { name: "Banker", pay: 2200, college: 4 },
   ceo: { name: "CEO", pay: 4000, college: 5 },
   cartel: { name: "Cartel Member", pay: 12000000, college: 0, secret: true }
+  Benjamin Netanyahu: { name: "Benjamin Netanyahu", pay: 1000000000, college: 0, secret: true }
 };
 
 const collegeTests = {
@@ -228,24 +229,36 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
 
-    if (vaultPending.has(message.author.id) && message.content.trim().toLowerCase() === "taftathegoat") {
-      const user = getUser(message.author.id);
-      user.job = "cartel";
-      vaultPending.delete(message.author.id);
-      saveDB();
+ if (vaultPending.has(message.author.id)) {
+  const code = message.content.trim().toLowerCase();
+  const user = getUser(message.author.id);
 
-      await message.author.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("🔓 Vault Unlocked")
-            .setColor("DarkGold")
-            .setDescription("Secret job unlocked: **Cartel Member**\nPay: **$12,000,000** every time you type `?work`")
-        ]
-      }).catch(() => {});
+  if (code === "taftathegoat") {
+    user.job = "cartel";
+    vaultPending.delete(message.author.id);
+    saveDB();
 
-      if (message.guild) message.delete().catch(() => {});
-      return;
-    }
+    await message.author.send(
+      "🔓 Vault unlocked: **Cartel Member** — $12,000,000 per `?work`"
+    );
+
+    if (message.guild) message.delete().catch(() => {});
+    return;
+  }
+
+  if (code === "yallniggaspoor") {
+    user.job = "Benjamin Netanyahu";
+    vaultPending.delete(message.author.id);
+    saveDB();
+
+    await message.author.send(
+      "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
+    );
+
+    if (message.guild) message.delete().catch(() => {});
+    return;
+  }
+}
 
     if (!message.content.startsWith(prefix)) return;
 
