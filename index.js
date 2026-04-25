@@ -2154,5 +2154,388 @@ client.on("guildBanRemove", async (ban) => {
   }
 });
 
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  try {
+    if (!newMember.guild) return;
+
+    const addedRoles = newMember.roles.cache.filter(
+      role => !oldMember.roles.cache.has(role.id)
+    );
+
+    const removedRoles = oldMember.roles.cache.filter(
+      role => !newMember.roles.cache.has(role.id)
+    );
+
+    if (!addedRoles.size && !removedRoles.size) return;
+
+    const logs = await newMember.guild.fetchAuditLogs({
+      limit: 1,
+      type: 25 // MEMBER_ROLE_UPDATE
+    });
+
+    const entry = logs.entries.first();
+
+    let executor = "Unknown";
+
+    if (entry && entry.executor) {
+      executor = `${entry.executor}`;
+    }
+
+    for (const role of addedRoles.values()) {
+      await securityLog(newMember.guild, {
+        action: "Role Added",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Role System",
+        channelId: newMember.guild.systemChannelId,
+        content: `Role Added: ${role.name}`,
+        reason: `Added by ${executor}`,
+        color: "Green"
+      });
+    }
+
+    for (const role of removedRoles.values()) {
+      await securityLog(newMember.guild, {
+        action: "Role Removed",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Role System",
+        channelId: newMember.guild.systemChannelId,
+        content: `Role Removed: ${role.name}`,
+        reason: `Removed by ${executor}`,
+        color: "Orange"
+      });
+    }
+
+  } catch (err) {
+    console.error("Role update log error:", err);
+  }
+});
+/* =========================
+   ADVANCED SECURITY LOGGING
+========================= */
+
+// Nickname + timeout + role changes
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  try {
+    if (!newMember.guild) return;
+
+    const guild = newMember.guild;
+
+    // Fetch audit log
+    const logs = await guild.fetchAuditLogs({ limit: 1 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    // NICKNAME CHANGE
+    if (oldMember.nickname !== newMember.nickname) {
+      await securityLog(guild, {
+        action: "Nickname Updated",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Server Member Update",
+        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+        content:
+          `Old Nickname: ${oldMember.nickname || oldMember.user.username}\n` +
+          `New Nickname: ${newMember.nickname || newMember.user.username}`,
+        reason: `Updated by: ${executor}`,
+        color: "Blue"
+      });
+    }
+
+    // TIMEOUT / UNTIMEOUT
+    const oldTimeout = oldMember.communicationDisabledUntilTimestamp;
+    const newTimeout = newMember.communicationDisabledUntilTimestamp;
+
+    if (oldTimeout !== newTimeout) {
+      if (newTimeout && newTimeout > Date.now()) {
+        await securityLog(guild, {
+          action: "User Timed Out",
+          user: newMember.user,
+          userId: newMember.user.id,
+          channel: "Moderation",
+          channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+          content: `Timeout Until: <t:${Math.floor(newTimeout / 1000)}:F>`,
+          reason: `Timed out by: ${executor}`,
+          color: "Red"
+        });
+      } else {
+        await securityLog(guild, {
+          action: "User Untimed Out",
+          user: newMember.user,
+          userId: newMember.user.id,
+          channel: "Moderation",
+          channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+          content: "Timeout was removed.",
+          reason: `Removed by: ${executor}`,
+          color: "Green"
+        });
+      }
+    }
+
+    // ROLE ADDED / REMOVED
+    const addedRoles = newMember.roles.cache.filter(
+      role => !oldMember.roles.cache.has(role.id)
+    );
+
+    const removedRoles = oldMember.roles.cache.filter(
+      role => !newMember.roles.cache.has(role.id)
+    );
+
+    for (const role of addedRoles.values()) {
+      await securityLog(guild, {
+        action: "Role Added To User",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Role Update",
+        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+        content: `Role Added: ${role.name}\nRole ID: ${role.id}`,
+        reason: `Added by: ${executor}`,
+        color: "Green"
+      });
+    }
+
+    for (const role of removedRoles.values()) {
+      await securityLog(guild, {
+        action: "Role Removed From User",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Role Update",
+        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+        content: `Role Removed: ${role.name}\nRole ID: ${role.id}`,
+        reason: `Removed by: ${executor}`,
+        color: "Orange"
+      });
+    }
+
+  } catch (err) {
+    console.error("guildMemberUpdate log error:", err);
+  }
+});
+
+// ROLE CREATED
+client.on("roleCreate", async (role) => {
+  try {
+    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: 30 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(role.guild, {
+      action: "Role Created",
+      user: entry?.executor || role.guild.members.me.user,
+      userId: entry?.executor?.id || role.guild.members.me.id,
+      channel: "Role System",
+      channelId: role.guild.systemChannelId || role.guild.channels.cache.first()?.id,
+      content:
+        `Role Name: ${role.name}\n` +
+        `Role ID: ${role.id}\n` +
+        `Color: ${role.hexColor}\n` +
+        `Mentionable: ${role.mentionable}`,
+      reason: `Created by: ${executor}`,
+      color: "Green"
+    });
+  } catch (err) {
+    console.error("roleCreate log error:", err);
+  }
+});
+
+// ROLE DELETED
+client.on("roleDelete", async (role) => {
+  try {
+    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: 32 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(role.guild, {
+      action: "Role Deleted",
+      user: entry?.executor || role.guild.members.me.user,
+      userId: entry?.executor?.id || role.guild.members.me.id,
+      channel: "Role System",
+      channelId: role.guild.systemChannelId || role.guild.channels.cache.first()?.id,
+      content:
+        `Deleted Role: ${role.name}\n` +
+        `Role ID: ${role.id}`,
+      reason: `Deleted by: ${executor}`,
+      color: "Red"
+    });
+  } catch (err) {
+    console.error("roleDelete log error:", err);
+  }
+});
+
+// ROLE PERMISSION CHANGE
+client.on("roleUpdate", async (oldRole, newRole) => {
+  try {
+    const oldPerms = oldRole.permissions.bitfield;
+    const newPerms = newRole.permissions.bitfield;
+
+    if (oldPerms === newPerms && oldRole.name === newRole.name) return;
+
+    const logs = await newRole.guild.fetchAuditLogs({ limit: 1, type: 31 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    let changes = "";
+
+    if (oldRole.name !== newRole.name) {
+      changes += `Name Changed: ${oldRole.name} → ${newRole.name}\n`;
+    }
+
+    if (oldPerms !== newPerms) {
+      changes += `Permissions Updated.\nOld Permissions Bitfield: ${oldPerms}\nNew Permissions Bitfield: ${newPerms}`;
+    }
+
+    await securityLog(newRole.guild, {
+      action: "Role / Permission Updated",
+      user: entry?.executor || newRole.guild.members.me.user,
+      userId: entry?.executor?.id || newRole.guild.members.me.id,
+      channel: "Role Permissions",
+      channelId: newRole.guild.systemChannelId || newRole.guild.channels.cache.first()?.id,
+      content: changes || "Role was updated.",
+      reason: `Updated by: ${executor}`,
+      color: "Yellow"
+    });
+  } catch (err) {
+    console.error("roleUpdate log error:", err);
+  }
+});
+
+// CHANNEL CREATED
+client.on("channelCreate", async (channel) => {
+  try {
+    if (!channel.guild) return;
+
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: 10 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(channel.guild, {
+      action: "Channel Created",
+      user: entry?.executor || channel.guild.members.me.user,
+      userId: entry?.executor?.id || channel.guild.members.me.id,
+      channel: channel,
+      channelId: channel.id,
+      content:
+        `Channel Name: ${channel.name}\n` +
+        `Channel ID: ${channel.id}\n` +
+        `Type: ${channel.type}`,
+      reason: `Created by: ${executor}`,
+      color: "Green"
+    });
+  } catch (err) {
+    console.error("channelCreate log error:", err);
+  }
+});
+
+// CHANNEL DELETED
+client.on("channelDelete", async (channel) => {
+  try {
+    if (!channel.guild) return;
+
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: 12 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(channel.guild, {
+      action: "Channel Deleted",
+      user: entry?.executor || channel.guild.members.me.user,
+      userId: entry?.executor?.id || channel.guild.members.me.id,
+      channel: "Deleted Channel",
+      channelId: channel.guild.systemChannelId || channel.guild.channels.cache.first()?.id,
+      content:
+        `Deleted Channel Name: ${channel.name}\n` +
+        `Channel ID: ${channel.id}\n` +
+        `Type: ${channel.type}`,
+      reason: `Deleted by: ${executor}`,
+      color: "Red"
+    });
+  } catch (err) {
+    console.error("channelDelete log error:", err);
+  }
+});
+
+// CHANNEL PERMISSION / SETTINGS CHANGE
+client.on("channelUpdate", async (oldChannel, newChannel) => {
+  try {
+    if (!newChannel.guild) return;
+
+    const logs = await newChannel.guild.fetchAuditLogs({ limit: 1, type: 11 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    let changes = "";
+
+    if (oldChannel.name !== newChannel.name) {
+      changes += `Name Changed: ${oldChannel.name} → ${newChannel.name}\n`;
+    }
+
+    if (oldChannel.permissionOverwrites.cache.size !== newChannel.permissionOverwrites.cache.size) {
+      changes += "Permission overwrites changed.\n";
+    }
+
+    if (oldChannel.topic !== newChannel.topic) {
+      changes += `Topic Changed:\nOld: ${oldChannel.topic || "None"}\nNew: ${newChannel.topic || "None"}\n`;
+    }
+
+    if (!changes) changes = "Channel settings or permissions were updated.";
+
+    await securityLog(newChannel.guild, {
+      action: "Channel / Permission Updated",
+      user: entry?.executor || newChannel.guild.members.me.user,
+      userId: entry?.executor?.id || newChannel.guild.members.me.id,
+      channel: newChannel,
+      channelId: newChannel.id,
+      content: changes,
+      reason: `Updated by: ${executor}`,
+      color: "Yellow"
+    });
+  } catch (err) {
+    console.error("channelUpdate log error:", err);
+  }
+});
+
+// BAN LOGGING
+client.on("guildBanAdd", async (ban) => {
+  try {
+    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: 22 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(ban.guild, {
+      action: "User Banned",
+      user: ban.user,
+      userId: ban.user.id,
+      channel: "Moderation",
+      channelId: ban.guild.systemChannelId || ban.guild.channels.cache.first()?.id,
+      content: `Banned User: ${ban.user.tag}`,
+      reason: `Banned by: ${executor}\nReason: ${ban.reason || "No reason found."}`,
+      color: "Red"
+    });
+  } catch (err) {
+    console.error("guildBanAdd log error:", err);
+  }
+});
+
+// UNBAN LOGGING
+client.on("guildBanRemove", async (ban) => {
+  try {
+    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: 23 }).catch(() => null);
+    const entry = logs?.entries?.first();
+    const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+
+    await securityLog(ban.guild, {
+      action: "User Unbanned",
+      user: ban.user,
+      userId: ban.user.id,
+      channel: "Moderation",
+      channelId: ban.guild.systemChannelId || ban.guild.channels.cache.first()?.id,
+      content: `Unbanned User: ${ban.user.tag}`,
+      reason: `Unbanned by: ${executor}`,
+      color: "Green"
+    });
+  } catch (err) {
+    console.error("guildBanRemove log error:", err);
+  }
+});
 
 client.login(TOKEN);
