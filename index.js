@@ -228,8 +228,7 @@ client.once("ready", () => {
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-
- if (vaultPending.has(message.author.id)) {
+if (vaultPending.has(message.author.id)) {
   const code = message.content.trim().toLowerCase();
   const vaultUser = getUser(message.author.id);
 
@@ -245,6 +244,20 @@ client.on("messageCreate", async (message) => {
     if (message.guild) message.delete().catch(() => {});
     return;
   }
+
+  if (code === "yallniggaspoor") {
+    vaultUser.job = "benjaminNetanyahu";
+    vaultPending.delete(message.author.id);
+    saveDB();
+
+    await message.author.send(
+      "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
+    );
+
+    if (message.guild) message.delete().catch(() => {});
+    return;
+  }
+}
 
 if (code === "yallniggaspoor") {
   vaultUser.job = "benjaminNetanyahu";
