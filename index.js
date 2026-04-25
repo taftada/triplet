@@ -104,21 +104,21 @@ const collegeTests = {
 };
 
 const roastLines = [
-  "You built like a loading screen that never finishes.",
-  "You move like lag in a ranked match.",
-  "You got WiFi but still buffering in real life.",
-  "You look like your barber rage quit halfway.",
+  "Shut up nigga you just mad cuz yo Direct TV cable box isn't directly connected to yo TV boy",
+  "Shut up nigga you feel burps form in yo throat and piss yo pants boy fuck is you saying",
+  "Nigga yo ass barely tipped over a Book in a library and the shelf opened up and revealed a secret base nigga yo ass is the real Bat-Man boy fuck is wrong with you",
+  "Yo ass was the most hated fire bender because you'd always bring flame throwers to cheat in Fire Training classes boy",
   "You built like a side quest nobody accepted.",
-  "You got main character confidence with background character skills.",
-  "You the type to lose a 1v1 against yourself.",
-  "You built like a broken controller stick drifting left.",
-  "You talk like your brain has pop-up ads.",
-  "You move like a PowerPoint transition.",
-  "You got defeated by the tutorial mission.",
-  "You built like a microwave with anxiety.",
-  "You got premium excuses and free trial skills.",
-  "You dress like your closet hit randomize.",
-  "You got folded by common sense."
+  "Nigga you was playing agario and got double splitted by a nigga named TimmyTwoThumbs boy you ugly as fuck",
+  "Yeah nigga that's why yo phone died in chemistry class boy and you tried to charge it with a professional 5-pin USB MIDI cable and it made yo phone get frost bite boy you dumb as fuck",
+  "Yup nigga and that's why you bought a digital alarm clock with wooden electronic LED time display just so you could wake up in case you have a nightmare nigga you dumb as fuck boy",
+  "That's why you had to buy a Clear point Elite 0.7millimeter mechanical pencil starter kit because yo best friend stole yo Number 2 pencil during the EOC exams boy you stupid as fuck",
+  "That was ass nigga you got a Wilson NFL Super Grip Football just sitting in yo garage boy cuz yo great grandfather played on the Washington Redskins back in the old days boy you ugly as fuck",
+  "Nope nigga you got a blue summer sky scented premium yankee candle sitting on yo night stand boy because the smell helps you have lucid dreams nigga you weird as fuck ",
+  "That was ass nigga you got a 13 foot long lava lamp just sitting in the middle of yo room boy and yo ass be using that shit as a stripper pole nigga fuck is you talkin bout nigga",
+  "That was ass boy you got a Enno Vatti Movies Scratch off Poster stapled to yo ceiling in yo room boy and yo ass be looking up at that shit before you go to bed so you can be inspired to do big things in life dumb ass boy fuck is you sayin",
+  "Shut up nigga yo poor ass got a HD Full Screen Welmax galaxy Note 9 screen protector on yo iPhone 4 se boy and whenever you try and play a mobile game yo fingers get cuts and scratches on it boy you dumb as fuck",
+  "Nigga you cat fish padestrians on poptropica boy "
 ];
 
 function getUser(id) {
