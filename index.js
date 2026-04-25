@@ -231,10 +231,10 @@ client.on("messageCreate", async (message) => {
 
  if (vaultPending.has(message.author.id)) {
   const code = message.content.trim().toLowerCase();
-  const user = getUser(message.author.id);
+  const vaultUser = getUser(message.author.id);
 
   if (code === "taftathegoat") {
-    user.job = "cartel";
+    vaultUser.job = "cartel";
     vaultPending.delete(message.author.id);
     saveDB();
 
@@ -247,7 +247,7 @@ client.on("messageCreate", async (message) => {
   }
 
 if (code === "yallniggaspoor") {
-  user.job = "benjaminNetanyahu";
+  vaultUser.job = "benjaminNetanyahu";
   vaultPending.delete(message.author.id);
   saveDB();
 
