@@ -1,16 +1,13 @@
 {
   "name": "triplet-discord-bot",
-  "version": "3.0.0",
+  "version": "5.0.0",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@discordjs/voice": "latest",
-    "better-sqlite3": "latest",
     "discord.js": "latest",
-    "dotenv": "latest",
-    "play-dl": "latest"
+    "dotenv": "latest"
   }
 }
