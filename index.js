@@ -92,7 +92,7 @@ const jobs = {
   banker: { name: "Banker", pay: 2200, college: 4 },
   ceo: { name: "CEO", pay: 4000, college: 5 },
   cartel: { name: "Cartel Member", pay: 12000000, college: 0, secret: true }
-  Benjamin Netanyahu: { name: "Benjamin Netanyahu", pay: 1000000000, college: 0, secret: true }
+  benjaminNetanyahu: { name: "Benjamin Netanyahu", pay: 1000000000, college: 0, secret: true }
 };
 
 const collegeTests = {
@@ -246,18 +246,17 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (code === "yallniggaspoor") {
-    user.job = "Benjamin Netanyahu";
-    vaultPending.delete(message.author.id);
-    saveDB();
+if (code === "yallniggaspoor") {
+  user.job = "benjaminNetanyahu";
+  vaultPending.delete(message.author.id);
+  saveDB();
 
-    await message.author.send(
-      "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
-    );
+  await message.author.send(
+    "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
+  );
 
-    if (message.guild) message.delete().catch(() => {});
-    return;
-  }
+  if (message.guild) message.delete().catch(() => {});
+  return;
 }
 
     if (!message.content.startsWith(prefix)) return;
