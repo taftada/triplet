@@ -1,5 +1,6 @@
 require("dotenv").config();
 const fs = require("fs");
+const path = require("path");
 
 const {
   Client,
@@ -31,6 +32,8 @@ if (!TOKEN) {
 }
 
 const DB_PATH = process.env.DATABASE_PATH || "./database.json";
+const DB_DIR = path.dirname(DB_PATH);
+if (DB_DIR !== "." && !fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
 function loadDB() {
   if (!fs.existsSync(DB_PATH)) {
@@ -51,16 +54,19 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.DirectMessages
   ],
   partials: [Partials.Channel]
 });
 
 const prefix = "?";
+
 const casinoSessions = new Map();
 const giveaways = new Map();
 const beefSessions = new Map();
 const musicQueues = new Map();
+const vaultPending = new Set();
 
 const shopItems = {
   vip: { name: "VIP Pass", price: 5000 },
@@ -84,7 +90,8 @@ const jobs = {
   mechanic: { name: "Mechanic", pay: 700, college: 2 },
   developer: { name: "Developer", pay: 1300, college: 3 },
   banker: { name: "Banker", pay: 2200, college: 4 },
-  ceo: { name: "CEO", pay: 4000, college: 5 }
+  ceo: { name: "CEO", pay: 4000, college: 5 },
+  cartel: { name: "Cartel Member", pay: 12000000, college: 0, secret: true }
 };
 
 const collegeTests = {
@@ -126,6 +133,11 @@ function getUser(id) {
     };
     saveDB();
   }
+
+  if (!db.users[id].inventory) db.users[id].inventory = [];
+  if (db.users[id].collegeLevel === undefined) db.users[id].collegeLevel = 0;
+  if (!db.users[id].job) db.users[id].job = "none";
+
   return db.users[id];
 }
 
@@ -147,13 +159,19 @@ function randomRoast() {
   return roastLines[Math.floor(Math.random() * roastLines.length)];
 }
 
+function makeSessionId(userId) {
+  return `${userId}-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
+}
+
 function createDeck() {
   const suits = ["♠️", "♥️", "♦️", "♣️"];
   const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
   const deck = [];
+
   for (const suit of suits) {
     for (const rank of ranks) deck.push({ rank, suit });
   }
+
   return deck.sort(() => Math.random() - 0.5);
 }
 
@@ -170,10 +188,12 @@ function cardValue(card) {
 function handValue(hand) {
   let total = hand.reduce((s, c) => s + cardValue(c), 0);
   let aces = hand.filter(c => c.rank === "A").length;
+
   while (total > 21 && aces > 0) {
     total -= 10;
     aces--;
   }
+
   return total;
 }
 
@@ -207,11 +227,50 @@ client.once("ready", () => {
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-    if (!message.guild) return;
+
+    if (vaultPending.has(message.author.id) && message.content.trim().toLowerCase() === "taftathegoat") {
+      const user = getUser(message.author.id);
+      user.job = "cartel";
+      vaultPending.delete(message.author.id);
+      saveDB();
+
+      await message.author.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🔓 Vault Unlocked")
+            .setColor("DarkGold")
+            .setDescription("Secret job unlocked: **Cartel Member**\nPay: **$12,000,000** every time you type `?work`")
+        ]
+      }).catch(() => {});
+
+      if (message.guild) message.delete().catch(() => {});
+      return;
+    }
+
     if (!message.content.startsWith(prefix)) return;
 
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const command = args.shift()?.toLowerCase();
+
+    if (command === "shhlolhaha") {
+      vaultPending.add(message.author.id);
+      if (message.guild) message.delete().catch(() => {});
+
+      return message.author.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🔐 Secret Vault")
+            .setColor("DarkGold")
+            .setDescription("Enter the vault code in the server or DM.\n\n**Hint:** only the chosen know it.")
+            .setFooter({ text: "This command is hidden from ?cmds" })
+        ]
+      }).catch(() => {
+        return message.reply("I tried to DM you, but your DMs are closed.");
+      });
+    }
+
+    if (!message.guild) return;
+
     const user = getUser(message.author.id);
 
     user.xp += Math.floor(Math.random() * 10) + 5;
@@ -236,7 +295,7 @@ client.on("messageCreate", async (message) => {
 ?shop, ?buy item, ?inventory, ?flex, ?flexon @user
 
 **Casino**
-?casino — Blackjack, Poker, Slots, Mines
+?casino — Blackjack, Poker, Slots, Mines, Roulette, Dice, Crash
 
 **College / Jobs**
 ?college, ?test, ?job list, ?job choose cashier
@@ -258,7 +317,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (command === "balance" || command === "bal") {
-      return message.reply(`Cash: **${money(user.cash)}**\nBank: **${money(user.bank)}**`);
+      return message.reply(`Cash: **${money(user.cash)}**\nBank: **${money(user.bank)}**\nJob: **${jobs[user.job]?.name || "No Job"}**`);
     }
 
     if (command === "daily") {
@@ -267,20 +326,34 @@ client.on("messageCreate", async (message) => {
       return message.reply(`You claimed **${money(1000)}**`);
     }
 
-    if (command === "work") {
-      const job = jobs[user.job] || jobs.none;
-      user.cash += job.pay;
-      saveDB();
-      return message.reply(`You worked as **${job.name}** and earned **${money(job.pay)}**`);
-    }
+ if (command === "work") {
+  const now = Date.now();
+  const cooldown = 3000; // 3 seconds
+
+  if (user.lastWork && now - user.lastWork < cooldown) {
+    const timeLeft = Math.ceil((cooldown - (now - user.lastWork)) / 1000);
+    return message.reply(`Wait **${timeLeft}s** before working again.`);
+  }
+
+  const job = jobs[user.job] || jobs.none;
+
+  user.cash += job.pay;
+  user.lastWork = now;
+
+  saveDB();
+
+  return message.reply(`You worked as **${job.name}** and earned **${money(job.pay)}**`);
+}
 
     if (command === "deposit" || command === "dep") {
       const amount = Number(args[0]);
       if (!amount || amount <= 0) return message.reply("Use `?deposit 500`");
       if (user.cash < amount) return message.reply("Not enough cash.");
+
       user.cash -= amount;
       user.bank += amount;
       saveDB();
+
       return message.reply(`Deposited **${money(amount)}**`);
     }
 
@@ -288,9 +361,11 @@ client.on("messageCreate", async (message) => {
       const amount = Number(args[0]);
       if (!amount || amount <= 0) return message.reply("Use `?withdraw 500`");
       if (user.bank < amount) return message.reply("Not enough bank money.");
+
       user.bank -= amount;
       user.cash += amount;
       saveDB();
+
       return message.reply(`Withdrew **${money(amount)}**`);
     }
 
@@ -368,8 +443,6 @@ client.on("messageCreate", async (message) => {
         .filter(x => x.item)
         .sort((a, b) => b.item.price - a.item.price)[0];
 
-      if (!best) return message.reply("You have nothing valuable to flex.");
-
       return message.channel.send({
         embeds: [
           new EmbedBuilder()
@@ -431,7 +504,12 @@ Level 5: CEO — $4,000
             new EmbedBuilder()
               .setTitle("💼 Jobs")
               .setColor("Green")
-              .setDescription(Object.entries(jobs).map(([key, j]) => `**${key}** — ${money(j.pay)} / college level ${j.college}`).join("\n"))
+              .setDescription(
+                Object.entries(jobs)
+                  .filter(([, j]) => !j.secret)
+                  .map(([key, j]) => `**${key}** — ${money(j.pay)} / college level ${j.college}`)
+                  .join("\n")
+              )
           ]
         });
       }
@@ -439,7 +517,8 @@ Level 5: CEO — $4,000
       if (sub === "choose") {
         const jobName = args[1]?.toLowerCase();
         const job = jobs[jobName];
-        if (!job) return message.reply("That job does not exist. Use `?job list`.");
+
+        if (!job || job.secret) return message.reply("That job does not exist. Use `?job list`.");
         if (user.collegeLevel < job.college) return message.reply(`You need college level **${job.college}** for that job.`);
 
         user.job = jobName;
@@ -458,7 +537,7 @@ Level 5: CEO — $4,000
       const row = new ActionRowBuilder().addComponents(
         test.answers.map(answer =>
           new ButtonBuilder()
-            .setCustomId(`test_${message.author.id}_${nextLevel}_${answer}`)
+            .setCustomId(`test:${message.author.id}:${nextLevel}:${answer}`)
             .setLabel(answer)
             .setStyle(ButtonStyle.Primary)
         )
@@ -476,25 +555,28 @@ Level 5: CEO — $4,000
     }
 
     if (command === "casino") {
-      const sessionId = `${message.author.id}_${Date.now()}`;
+      const sessionId = makeSessionId(message.author.id);
       casinoSessions.set(sessionId, { userId: message.author.id, bet: 100 });
 
       const menu = new StringSelectMenuBuilder()
-        .setCustomId(`casino_game_${sessionId}`)
+        .setCustomId(`casino:${sessionId}`)
         .setPlaceholder("Choose a game")
         .addOptions([
           { label: "Blackjack", value: "blackjack", emoji: "🃏" },
           { label: "Poker", value: "poker", emoji: "♠️" },
           { label: "Slots", value: "slots", emoji: "🎰" },
-          { label: "Mines", value: "mines", emoji: "💣" }
+          { label: "Mines", value: "mines", emoji: "💣" },
+          { label: "Roulette", value: "roulette", emoji: "🔴" },
+          { label: "Dice", value: "dice", emoji: "🎲" },
+          { label: "Crash", value: "crash", emoji: "📈" }
         ]);
 
       const row1 = new ActionRowBuilder().addComponents(menu);
       const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`bet_down_${sessionId}`).setLabel("-100").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`bet_up_${sessionId}`).setLabel("+100").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`bet_half_${sessionId}`).setLabel("Half").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`bet_all_${sessionId}`).setLabel("All In").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(`betdown:${sessionId}`).setLabel("-100").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`betup:${sessionId}`).setLabel("+100").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`bethalf:${sessionId}`).setLabel("Half").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`betall:${sessionId}`).setLabel("All In").setStyle(ButtonStyle.Danger)
       );
 
       return message.reply({
@@ -516,22 +598,28 @@ Level 5: CEO — $4,000
       if (!duration || !prize) return message.reply("Use `?giveaway 10m Nitro`");
 
       const id = Date.now().toString();
-      const embed = new EmbedBuilder()
-        .setTitle("🎉 GIVEAWAY")
-        .setColor("Gold")
-        .setDescription(`**Prize:** ${prize}\n**Ends:** <t:${Math.floor((Date.now() + duration) / 1000)}:R>\n\nClick below to enter.`)
-        .setFooter({ text: "0 entries" });
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`giveaway_${id}`).setLabel("Enter Giveaway").setEmoji("🎉").setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId(`giveaway:${id}`).setLabel("Enter Giveaway").setEmoji("🎉").setStyle(ButtonStyle.Success)
       );
 
-      const msg = await message.channel.send({ embeds: [embed], components: [row] });
+      const msg = await message.channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🎉 GIVEAWAY")
+            .setColor("Gold")
+            .setDescription(`**Prize:** ${prize}\n**Ends:** <t:${Math.floor((Date.now() + duration) / 1000)}:R>\n\nClick below to enter.`)
+            .setFooter({ text: "0 entries" })
+        ],
+        components: [row]
+      });
+
       giveaways.set(id, { prize, messageId: msg.id, channelId: message.channel.id, entries: new Set() });
 
       setTimeout(async () => {
         const g = giveaways.get(id);
         if (!g) return;
+
         const channel = await client.channels.fetch(g.channelId);
         const giveawayMsg = await channel.messages.fetch(g.messageId);
         const entries = [...g.entries];
@@ -546,10 +634,12 @@ Level 5: CEO — $4,000
         }
 
         const winner = entries[Math.floor(Math.random() * entries.length)];
+
         await giveawayMsg.edit({
           embeds: [new EmbedBuilder().setTitle("🎉 GIVEAWAY ENDED").setColor("Green").setDescription(`**Prize:** ${g.prize}\n**Winner:** <@${winner}>`)],
           components: []
         });
+
         channel.send(`🎉 <@${winner}> won **${g.prize}**`);
         giveaways.delete(id);
       }, duration);
@@ -582,12 +672,13 @@ Level 5: CEO — $4,000
 
     if (command === "reactionrole") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) return message.reply("No permission.");
+
       const role = message.mentions.roles.first();
       const label = args.slice(1).join(" ") || role?.name;
       if (!role) return message.reply("Use `?reactionrole @role Label`");
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`rr_${role.id}`).setLabel(label).setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId(`rr:${role.id}`).setLabel(label).setStyle(ButtonStyle.Primary)
       );
 
       return message.channel.send({
@@ -600,10 +691,10 @@ Level 5: CEO — $4,000
       if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) return message.reply("No permission.");
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("admin_lock").setLabel("Lock").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("admin_unlock").setLabel("Unlock").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("admin_slow").setLabel("Slowmode 5s").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("admin_clear").setLabel("Clear 10").setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId("admin:lock").setLabel("Lock").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("admin:unlock").setLabel("Unlock").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("admin:slow").setLabel("Slowmode 5s").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("admin:clear").setLabel("Clear 10").setStyle(ButtonStyle.Primary)
       );
 
       return message.reply({
@@ -614,6 +705,7 @@ Level 5: CEO — $4,000
 
     if (command === "beef") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) return message.reply("Only admins can use this.");
+
       const sub = args[0]?.toLowerCase();
       const key = `${message.guild.id}_${message.channel.id}`;
 
@@ -670,26 +762,33 @@ Level 5: CEO — $4,000
 
     if (command === "warn") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) return message.reply("No permission.");
+
       const target = message.mentions.users.first();
       const reason = args.slice(1).join(" ") || "No reason";
       if (!target) return message.reply("Use `?warn @user reason`");
+
       db.warnings.push({ guildId: message.guild.id, userId: target.id, reason, modId: message.author.id, time: Date.now() });
       saveDB();
+
       return message.reply(`Warned ${target.tag}: ${reason}`);
     }
 
     if (command === "ban" || command === "b") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.BanMembers)) return message.reply("No permission.");
+
       const member = message.mentions.members.first();
       if (!member) return message.reply("Use `?ban @user reason`");
+
       await member.ban({ reason: args.slice(1).join(" ") || "No reason" });
       return message.reply(`Banned ${member.user.tag}`);
     }
 
     if (command === "kick" || command === "k") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.KickMembers)) return message.reply("No permission.");
+
       const member = message.mentions.members.first();
       if (!member) return message.reply("Use `?kick @user reason`");
+
       await member.kick(args.slice(1).join(" ") || "No reason");
       return message.reply(`Kicked ${member.user.tag}`);
     }
@@ -705,14 +804,25 @@ Level 5: CEO — $4,000
     if (command === "play") {
       const query = args.join(" ");
       if (!query) return message.reply("Use `?play song name or url`");
+
       const voice = message.member.voice.channel;
       if (!voice) return message.reply("Join a voice channel first.");
 
       let queue = musicQueues.get(message.guild.id);
+
       if (!queue) {
         const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
-        queue = { player, songs: [], connection: null, text: message.channel, nowPlaying: null };
+
+        queue = {
+          player,
+          songs: [],
+          connection: null,
+          text: message.channel,
+          nowPlaying: null
+        };
+
         musicQueues.set(message.guild.id, queue);
+
         player.on(AudioPlayerStatus.Idle, () => playNext(message.guild.id));
         player.on("error", err => {
           console.error(err);
@@ -733,7 +843,9 @@ Level 5: CEO — $4,000
       });
 
       queue.connection.subscribe(queue.player);
+
       message.reply(`Added to queue: **${song.title}**`);
+
       if (!queue.nowPlaying) playNext(message.guild.id);
     }
 
@@ -761,10 +873,12 @@ Level 5: CEO — $4,000
     if (command === "stop") {
       const q = musicQueues.get(message.guild.id);
       if (!q) return message.reply("Nothing playing.");
+
       q.songs = [];
       q.player.stop();
       getVoiceConnection(message.guild.id)?.destroy();
       musicQueues.delete(message.guild.id);
+
       return message.reply("Stopped music.");
     }
 
@@ -775,7 +889,7 @@ Level 5: CEO — $4,000
     }
   } catch (err) {
     console.error(err);
-    return message.reply("Something broke. Check Railway logs.");
+    return message.reply("Something broke. Check Railway logs.").catch(() => {});
   }
 });
 
@@ -804,10 +918,10 @@ async function playNext(guildId) {
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("music_pause").setLabel("Pause").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("music_resume").setLabel("Resume").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("music_skip").setLabel("Skip").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("music_stop").setLabel("Stop").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setStyle(ButtonStyle.Danger)
       )
     ]
   });
@@ -817,8 +931,8 @@ client.on("interactionCreate", async (interaction) => {
   try {
     if (!interaction.guild) return;
 
-    if (interaction.isButton() && interaction.customId.startsWith("test_")) {
-      const [, userId, level, answer] = interaction.customId.split("_");
+    if (interaction.isButton() && interaction.customId.startsWith("test:")) {
+      const [, userId, level, answer] = interaction.customId.split(":");
       if (interaction.user.id !== userId) return interaction.reply({ content: "This test is not yours.", ephemeral: true });
 
       const user = getUser(interaction.user.id);
@@ -827,6 +941,7 @@ client.on("interactionCreate", async (interaction) => {
       if (answer === test.correct) {
         user.collegeLevel = Number(level);
         saveDB();
+
         return interaction.update({
           embeds: [new EmbedBuilder().setTitle("✅ Test Passed").setColor("Green").setDescription(`You passed college level **${level}**.`)],
           components: []
@@ -839,19 +954,18 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("bet_")) {
-      const parts = interaction.customId.split("_");
-      const action = parts[1];
-      const sessionId = parts.slice(2).join("_");
+    if (interaction.isButton() && interaction.customId.startsWith("bet")) {
+      const [action, sessionId] = interaction.customId.split(":");
       const session = casinoSessions.get(sessionId);
       if (!session) return interaction.reply({ content: "Casino session expired.", ephemeral: true });
       if (interaction.user.id !== session.userId) return interaction.reply({ content: "This casino is not yours.", ephemeral: true });
 
       const user = getUser(interaction.user.id);
-      if (action === "up") session.bet += 100;
-      if (action === "down") session.bet = Math.max(100, session.bet - 100);
-      if (action === "half") session.bet = Math.max(100, Math.floor(user.cash / 2));
-      if (action === "all") session.bet = Math.max(100, user.cash);
+
+      if (action === "betup") session.bet += 100;
+      if (action === "betdown") session.bet = Math.max(100, session.bet - 100);
+      if (action === "bethalf") session.bet = Math.max(100, Math.floor(user.cash / 2));
+      if (action === "betall") session.bet = Math.max(100, user.cash);
       if (session.bet > user.cash) session.bet = user.cash;
 
       return interaction.update({
@@ -860,8 +974,8 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith("casino_game_")) {
-      const sessionId = interaction.customId.replace("casino_game_", "");
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith("casino:")) {
+      const sessionId = interaction.customId.split(":")[1];
       const session = casinoSessions.get(sessionId);
       if (!session) return interaction.reply({ content: "Casino session expired.", ephemeral: true });
       if (interaction.user.id !== session.userId) return interaction.reply({ content: "This casino is not yours.", ephemeral: true });
@@ -882,9 +996,9 @@ client.on("interactionCreate", async (interaction) => {
         casinoSessions.set(sessionId, { ...session, game, deck, player, dealer });
 
         const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`bj_hit_${sessionId}`).setLabel("Hit").setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`bj_stand_${sessionId}`).setLabel("Stand").setStyle(ButtonStyle.Danger),
-          new ButtonBuilder().setCustomId(`bj_double_${sessionId}`).setLabel("Double").setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId(`bjhit:${sessionId}`).setLabel("Hit").setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`bjstand:${sessionId}`).setLabel("Stand").setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`bjdouble:${sessionId}`).setLabel("Double").setStyle(ButtonStyle.Primary)
         );
 
         return interaction.update({
@@ -907,73 +1021,111 @@ client.on("interactionCreate", async (interaction) => {
       if (game === "poker") {
         user.cash -= bet;
         saveDB();
+        return playPoker(interaction, sessionId);
+      }
 
-        const deck = createDeck();
-        const player = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
-        const dealer = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
-        const playerEval = evaluatePoker(player);
-        const dealerEval = evaluatePoker(dealer);
-
-        let result = "You lost.";
-        let win = 0;
-
-        if (playerEval.rank > dealerEval.rank) {
-          win = Math.floor(bet * playerEval.multi) || bet * 2;
-          user.cash += win;
-          result = `You won **${money(win)}**`;
-        } else if (playerEval.rank === dealerEval.rank) {
-          user.cash += bet;
-          result = "Push. Your bet was returned.";
-        }
-
-        saveDB();
+      if (game === "mines") {
+        casinoSessions.set(sessionId, { ...session, game: "mines_setup", minesCount: 3 });
 
         const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`poker_again_${sessionId}`).setLabel("Play Again").setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`poker_exit_${sessionId}`).setLabel("Exit").setStyle(ButtonStyle.Danger)
+          new ButtonBuilder().setCustomId(`minesminus:${sessionId}`).setLabel("- Mine").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(`minesplus:${sessionId}`).setLabel("+ Mine").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(`minesstart:${sessionId}`).setLabel("Start Mines").setStyle(ButtonStyle.Success)
         );
 
         return interaction.update({
           embeds: [
             new EmbedBuilder()
-              .setTitle("♠️ Poker")
-              .setColor("Purple")
-              .setDescription(`Bet: **${money(bet)}**\n\nYour hand: ${cardText(player)}\n**${playerEval.name}**\n\nDealer hand: ${cardText(dealer)}\n**${dealerEval.name}**\n\n${result}\nCash: **${money(user.cash)}**`)
+              .setTitle("💣 Mines Setup")
+              .setColor("DarkGold")
+              .setDescription(`Bet: **${money(bet)}**\nMines: **3**\n\nMore mines = bigger cashout.`)
           ],
           components: [row]
         });
       }
 
-      if (game === "mines") {
+      if (game === "roulette") {
         user.cash -= bet;
+
+        const number = Math.floor(Math.random() * 37);
+        const color = number === 0 ? "green" : number % 2 === 0 ? "black" : "red";
+
+        let win = 0;
+        if (color === "red") win = bet * 2;
+
+        user.cash += win;
         saveDB();
 
-        const mines = new Set();
-        while (mines.size < 3) mines.add(Math.floor(Math.random() * 16));
+        return interaction.update({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🔴 Roulette")
+              .setColor(win > 0 ? "Green" : "Red")
+              .setDescription(`Ball landed on **${number} ${color}**\nYou bet red.\n${win > 0 ? `You won **${money(win)}**` : `You lost **${money(bet)}**`}\nCash: **${money(user.cash)}**`)
+          ],
+          components: []
+        });
+      }
 
-        casinoSessions.set(sessionId, { ...session, game, mines, revealed: new Set(), active: true });
+      if (game === "dice") {
+        user.cash -= bet;
+
+        const roll = Math.floor(Math.random() * 6) + 1;
+        let win = 0;
+        if (roll >= 4) win = bet * 2;
+
+        user.cash += win;
+        saveDB();
 
         return interaction.update({
-          embeds: [new EmbedBuilder().setTitle("💣 Mines").setColor("DarkGold").setDescription(`Bet: **${money(bet)}**\nThere are **3 mines**. Pick tiles or cash out.`)],
-          components: minesRows(sessionId)
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("🎲 Dice")
+              .setColor(win > 0 ? "Green" : "Red")
+              .setDescription(`You rolled **${roll}**\nWin on 4, 5, or 6.\n${win > 0 ? `You won **${money(win)}**` : `You lost **${money(bet)}**`}\nCash: **${money(user.cash)}**`)
+          ],
+          components: []
+        });
+      }
+
+      if (game === "crash") {
+        user.cash -= bet;
+
+        const crashPoint = Number((Math.random() * 4 + 1).toFixed(2));
+        const cashout = Number((Math.random() * 3 + 1).toFixed(2));
+
+        let win = 0;
+        if (cashout < crashPoint) win = Math.floor(bet * cashout);
+
+        user.cash += win;
+        saveDB();
+
+        return interaction.update({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("📈 Crash")
+              .setColor(win > 0 ? "Green" : "Red")
+              .setDescription(`Crash point: **${crashPoint}x**\nYour cashout: **${cashout}x**\n${win > 0 ? `You won **${money(win)}**` : `You crashed and lost **${money(bet)}**`}\nCash: **${money(user.cash)}**`)
+          ],
+          components: []
         });
       }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("bj_")) {
-      const parts = interaction.customId.split("_");
-      const action = parts[1];
-      const sessionId = parts.slice(2).join("_");
+    if (interaction.isButton() && interaction.customId.startsWith("bj")) {
+      const [action, sessionId] = interaction.customId.split(":");
       const session = casinoSessions.get(sessionId);
       if (!session) return interaction.reply({ content: "Game expired.", ephemeral: true });
       if (interaction.user.id !== session.userId) return interaction.reply({ content: "This game is not yours.", ephemeral: true });
 
       const user = getUser(interaction.user.id);
 
-      if (action === "hit") {
+      if (action === "bjhit") {
         session.player.push(session.deck.pop());
+
         if (handValue(session.player) > 21) {
           casinoSessions.delete(sessionId);
+
           return interaction.update({
             embeds: [new EmbedBuilder().setTitle("🃏 Blackjack").setColor("Red").setDescription(`Your hand: ${cardText(session.player)} — **${handValue(session.player)}**\nYou busted and lost **${money(session.bet)}**.`)],
             components: []
@@ -981,8 +1133,8 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`bj_hit_${sessionId}`).setLabel("Hit").setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`bj_stand_${sessionId}`).setLabel("Stand").setStyle(ButtonStyle.Danger)
+          new ButtonBuilder().setCustomId(`bjhit:${sessionId}`).setLabel("Hit").setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`bjstand:${sessionId}`).setLabel("Stand").setStyle(ButtonStyle.Danger)
         );
 
         return interaction.update({
@@ -991,20 +1143,24 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      if (action === "double") {
+      if (action === "bjdouble") {
         if (user.cash < session.bet) return interaction.reply({ content: "Not enough cash to double.", ephemeral: true });
+
         user.cash -= session.bet;
         session.bet *= 2;
         session.player.push(session.deck.pop());
         saveDB();
+
         return resolveBlackjack(interaction, sessionId);
       }
 
-      if (action === "stand") return resolveBlackjack(interaction, sessionId);
+      if (action === "bjstand") {
+        return resolveBlackjack(interaction, sessionId);
+      }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("slot_respin_")) {
-      const sessionId = interaction.customId.replace("slot_respin_", "");
+    if (interaction.isButton() && interaction.customId.startsWith("slotrespin:")) {
+      const sessionId = interaction.customId.split(":")[1];
       const session = casinoSessions.get(sessionId);
       if (!session) return interaction.reply({ content: "Session expired.", ephemeral: true });
       if (interaction.user.id !== session.userId) return interaction.reply({ content: "This slot game is not yours.", ephemeral: true });
@@ -1018,8 +1174,8 @@ client.on("interactionCreate", async (interaction) => {
       return spinSlots(interaction, sessionId, session.bet);
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("poker_again_")) {
-      const sessionId = interaction.customId.replace("poker_again_", "");
+    if (interaction.isButton() && interaction.customId.startsWith("pokeragain:")) {
+      const sessionId = interaction.customId.split(":")[1];
       const session = casinoSessions.get(sessionId);
       if (!session) return interaction.reply({ content: "Session expired.", ephemeral: true });
 
@@ -1029,59 +1185,71 @@ client.on("interactionCreate", async (interaction) => {
       user.cash -= session.bet;
       saveDB();
 
-      const deck = createDeck();
-      const player = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
-      const dealer = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
-      const playerEval = evaluatePoker(player);
-      const dealerEval = evaluatePoker(dealer);
+      return playPoker(interaction, sessionId);
+    }
 
-      let result = "You lost.";
-      if (playerEval.rank > dealerEval.rank) {
-        const win = Math.floor(session.bet * playerEval.multi) || session.bet * 2;
-        user.cash += win;
-        result = `You won **${money(win)}**`;
-      } else if (playerEval.rank === dealerEval.rank) {
-        user.cash += session.bet;
-        result = "Push. Your bet was returned.";
-      }
+    if (interaction.isButton() && interaction.customId.startsWith("pokerexit:")) {
+      const sessionId = interaction.customId.split(":")[1];
+      casinoSessions.delete(sessionId);
+      return interaction.update({ embeds: [new EmbedBuilder().setTitle("Poker closed.").setColor("Red")], components: [] });
+    }
 
+    if (interaction.isButton() && interaction.customId.startsWith("minesminus:")) {
+      const sessionId = interaction.customId.split(":")[1];
+      const session = casinoSessions.get(sessionId);
+      if (!session) return interaction.reply({ content: "Session expired.", ephemeral: true });
+      if (interaction.user.id !== session.userId) return interaction.reply({ content: "This game is not yours.", ephemeral: true });
+
+      session.minesCount = Math.max(1, session.minesCount - 1);
+      return updateMinesSetup(interaction, sessionId);
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("minesplus:")) {
+      const sessionId = interaction.customId.split(":")[1];
+      const session = casinoSessions.get(sessionId);
+      if (!session) return interaction.reply({ content: "Session expired.", ephemeral: true });
+      if (interaction.user.id !== session.userId) return interaction.reply({ content: "This game is not yours.", ephemeral: true });
+
+      session.minesCount = Math.min(10, session.minesCount + 1);
+      return updateMinesSetup(interaction, sessionId);
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("minesstart:")) {
+      const sessionId = interaction.customId.split(":")[1];
+      const session = casinoSessions.get(sessionId);
+      const user = getUser(interaction.user.id);
+
+      if (!session) return interaction.reply({ content: "Session expired.", ephemeral: true });
+      if (interaction.user.id !== session.userId) return interaction.reply({ content: "This game is not yours.", ephemeral: true });
+      if (user.cash < session.bet) return interaction.reply({ content: "Not enough cash.", ephemeral: true });
+
+      user.cash -= session.bet;
       saveDB();
 
+      const mines = new Set();
+      while (mines.size < session.minesCount) mines.add(Math.floor(Math.random() * 16));
+
+      session.game = "mines";
+      session.mines = mines;
+      session.revealed = new Set();
+
       return interaction.update({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("♠️ Poker")
-            .setColor("Purple")
-            .setDescription(`Bet: **${money(session.bet)}**\n\nYour hand: ${cardText(player)}\n**${playerEval.name}**\n\nDealer hand: ${cardText(dealer)}\n**${dealerEval.name}**\n\n${result}\nCash: **${money(user.cash)}**`)
-        ],
-        components: interaction.message.components
+        embeds: [new EmbedBuilder().setTitle("💣 Mines").setColor("DarkGold").setDescription(`Bet: **${money(session.bet)}**\nMines: **${session.minesCount}**\nPick tiles. Cash out before you hit a mine.`)],
+        components: minesRows(sessionId, session.revealed)
       });
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("mine_")) {
-      const [, sessionId, tileRaw] = interaction.customId.split("_");
+    if (interaction.isButton() && interaction.customId.startsWith("minepick:")) {
+      const [, sessionId, tileRaw] = interaction.customId.split(":");
+      const tile = Number(tileRaw);
       const session = casinoSessions.get(sessionId);
+
       if (!session) return interaction.reply({ content: "Game expired.", ephemeral: true });
       if (interaction.user.id !== session.userId) return interaction.reply({ content: "This mines game is not yours.", ephemeral: true });
 
-      if (tileRaw === "cashout") {
-        const user = getUser(interaction.user.id);
-        const multiplier = 1 + session.revealed.size * 0.35;
-        const win = Math.floor(session.bet * multiplier);
-
-        user.cash += win;
-        saveDB();
-        casinoSessions.delete(sessionId);
-
-        return interaction.update({
-          embeds: [new EmbedBuilder().setTitle("💣 Mines Cashout").setColor("Green").setDescription(`Safe tiles: **${session.revealed.size}**\nWon **${money(win)}**`)],
-          components: []
-        });
-      }
-
-      const tile = Number(tileRaw);
       if (session.mines.has(tile)) {
         casinoSessions.delete(sessionId);
+
         return interaction.update({
           embeds: [new EmbedBuilder().setTitle("💥 BOOM").setColor("Red").setDescription(`You hit a mine and lost **${money(session.bet)}**.`)],
           components: []
@@ -1090,33 +1258,54 @@ client.on("interactionCreate", async (interaction) => {
 
       session.revealed.add(tile);
 
+      const multiplier = 1 + session.revealed.size * (0.25 + session.minesCount * 0.08);
+      const cashout = Math.floor(session.bet * multiplier);
+
       return interaction.update({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("💣 Mines")
-            .setColor("DarkGold")
-            .setDescription(`Safe tiles: **${session.revealed.size}**\nCashout: **${money(Math.floor(session.bet * (1 + session.revealed.size * 0.35)))}**`)
-        ],
+        embeds: [new EmbedBuilder().setTitle("💣 Mines").setColor("DarkGold").setDescription(`Mines: **${session.minesCount}**\nSafe tiles: **${session.revealed.size}**\nCurrent cashout: **${money(cashout)}**`)],
         components: minesRows(sessionId, session.revealed)
       });
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("giveaway_")) {
-      const id = interaction.customId.replace("giveaway_", "");
+    if (interaction.isButton() && interaction.customId.startsWith("minecash:")) {
+      const sessionId = interaction.customId.split(":")[1];
+      const session = casinoSessions.get(sessionId);
+      const user = getUser(interaction.user.id);
+
+      if (!session) return interaction.reply({ content: "Game expired.", ephemeral: true });
+      if (interaction.user.id !== session.userId) return interaction.reply({ content: "This mines game is not yours.", ephemeral: true });
+
+      const multiplier = 1 + session.revealed.size * (0.25 + session.minesCount * 0.08);
+      const win = Math.floor(session.bet * multiplier);
+
+      user.cash += win;
+      saveDB();
+      casinoSessions.delete(sessionId);
+
+      return interaction.update({
+        embeds: [new EmbedBuilder().setTitle("💰 Mines Cashout").setColor("Green").setDescription(`Mines: **${session.minesCount}**\nSafe tiles: **${session.revealed.size}**\nYou won **${money(win)}**\nCash: **${money(user.cash)}**`)],
+        components: []
+      });
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("giveaway:")) {
+      const id = interaction.customId.split(":")[1];
       const g = giveaways.get(id);
       if (!g) return interaction.reply({ content: "Giveaway ended.", ephemeral: true });
 
       g.entries.add(interaction.user.id);
+
       const channel = await client.channels.fetch(g.channelId);
       const msg = await channel.messages.fetch(g.messageId);
       const embed = EmbedBuilder.from(msg.embeds[0]).setFooter({ text: `${g.entries.size} entries` });
+
       await msg.edit({ embeds: [embed] });
 
       return interaction.reply({ content: "You entered.", ephemeral: true });
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("rr_")) {
-      const roleId = interaction.customId.replace("rr_", "");
+    if (interaction.isButton() && interaction.customId.startsWith("rr:")) {
+      const roleId = interaction.customId.split(":")[1];
       const member = interaction.member;
 
       if (member.roles.cache.has(roleId)) {
@@ -1128,39 +1317,45 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "Role added.", ephemeral: true });
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("admin_")) {
-      if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) return interaction.reply({ content: "No permission.", ephemeral: true });
+    if (interaction.isButton() && interaction.customId.startsWith("admin:")) {
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        return interaction.reply({ content: "No permission.", ephemeral: true });
+      }
 
-      if (interaction.customId === "admin_lock") {
+      const action = interaction.customId.split(":")[1];
+
+      if (action === "lock") {
         await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: false });
         return interaction.reply("Channel locked.");
       }
 
-      if (interaction.customId === "admin_unlock") {
+      if (action === "unlock") {
         await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: true });
         return interaction.reply("Channel unlocked.");
       }
 
-      if (interaction.customId === "admin_slow") {
+      if (action === "slow") {
         await interaction.channel.setRateLimitPerUser(5);
         return interaction.reply("Slowmode set to 5 seconds.");
       }
 
-      if (interaction.customId === "admin_clear") {
+      if (action === "clear") {
         await interaction.channel.bulkDelete(10, true);
         return interaction.reply("Deleted 10 messages.");
       }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("music_")) {
+    if (interaction.isButton() && interaction.customId.startsWith("music:")) {
       const q = musicQueues.get(interaction.guild.id);
       if (!q) return interaction.reply({ content: "Nothing playing.", ephemeral: true });
 
-      if (interaction.customId === "music_pause") q.player.pause();
-      if (interaction.customId === "music_resume") q.player.unpause();
-      if (interaction.customId === "music_skip") q.player.stop();
+      const action = interaction.customId.split(":")[1];
 
-      if (interaction.customId === "music_stop") {
+      if (action === "pause") q.player.pause();
+      if (action === "resume") q.player.unpause();
+      if (action === "skip") q.player.stop();
+
+      if (action === "stop") {
         q.songs = [];
         q.player.stop();
         getVoiceConnection(interaction.guild.id)?.destroy();
@@ -1174,6 +1369,21 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "Something broke.", ephemeral: true }).catch(() => {});
   }
 });
+
+function updateMinesSetup(interaction, sessionId) {
+  const session = casinoSessions.get(sessionId);
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`minesminus:${sessionId}`).setLabel("- Mine").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`minesplus:${sessionId}`).setLabel("+ Mine").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`minesstart:${sessionId}`).setLabel("Start Mines").setStyle(ButtonStyle.Success)
+  );
+
+  return interaction.update({
+    embeds: [new EmbedBuilder().setTitle("💣 Mines Setup").setColor("DarkGold").setDescription(`Bet: **${money(session.bet)}**\nMines: **${session.minesCount}**\nMore mines = more risk = bigger cashout.`)],
+    components: [row]
+  });
+}
 
 function spinSlots(interaction, sessionId, bet) {
   const session = casinoSessions.get(sessionId);
@@ -1198,9 +1408,9 @@ function spinSlots(interaction, sessionId, bet) {
   casinoSessions.set(sessionId, { ...session, game: "slots" });
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`slot_respin_${sessionId}`).setLabel("Respin").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`bet_up_${sessionId}`).setLabel("+100 Bet").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`bet_down_${sessionId}`).setLabel("-100 Bet").setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`slotrespin:${sessionId}`).setLabel("Respin").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`betup:${sessionId}`).setLabel("+100 Bet").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`betdown:${sessionId}`).setLabel("-100 Bet").setStyle(ButtonStyle.Secondary)
   );
 
   return interaction.update({
@@ -1209,6 +1419,46 @@ function spinSlots(interaction, sessionId, bet) {
         .setTitle("🎰 Slots")
         .setColor(win > 0 ? "Green" : "Red")
         .setDescription(`## ${spin.join(" | ")}\n\nBet: **${money(bet)}**\n${win > 0 ? `You won **${money(win)}**` : "You lost."}\nCash: **${money(user.cash)}**`)
+    ],
+    components: [row]
+  });
+}
+
+function playPoker(interaction, sessionId) {
+  const session = casinoSessions.get(sessionId);
+  const user = getUser(interaction.user.id);
+  const deck = createDeck();
+
+  const player = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
+  const dealer = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
+
+  const playerEval = evaluatePoker(player);
+  const dealerEval = evaluatePoker(dealer);
+
+  let result = "You lost.";
+
+  if (playerEval.rank > dealerEval.rank) {
+    const win = Math.floor(session.bet * playerEval.multi) || session.bet * 2;
+    user.cash += win;
+    result = `You won **${money(win)}**`;
+  } else if (playerEval.rank === dealerEval.rank) {
+    user.cash += session.bet;
+    result = "Push. Your bet was returned.";
+  }
+
+  saveDB();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`pokeragain:${sessionId}`).setLabel("Play Again").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`pokerexit:${sessionId}`).setLabel("Exit").setStyle(ButtonStyle.Danger)
+  );
+
+  return interaction.update({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("♠️ Poker")
+        .setColor("Purple")
+        .setDescription(`Bet: **${money(session.bet)}**\n\nYour hand: ${cardText(player)}\n**${playerEval.name}**\n\nDealer hand: ${cardText(dealer)}\n**${dealerEval.name}**\n\n${result}\nCash: **${money(user.cash)}**`)
     ],
     components: [row]
   });
@@ -1256,7 +1506,7 @@ async function resolveBlackjack(interaction, sessionId) {
 function minesRows(sessionId, revealed = new Set()) {
   const rows = [];
 
-  for (let r = 0; r < 3; r++) {
+  for (let r = 0; r < 4; r++) {
     const row = new ActionRowBuilder();
 
     for (let c = 0; c < 4; c++) {
@@ -1264,7 +1514,7 @@ function minesRows(sessionId, revealed = new Set()) {
 
       row.addComponents(
         new ButtonBuilder()
-          .setCustomId(`mine_${sessionId}_${tile}`)
+          .setCustomId(`minepick:${sessionId}:${tile}`)
           .setLabel(revealed.has(tile) ? "✅" : "⬜")
           .setStyle(revealed.has(tile) ? ButtonStyle.Success : ButtonStyle.Secondary)
           .setDisabled(revealed.has(tile))
@@ -1274,21 +1524,9 @@ function minesRows(sessionId, revealed = new Set()) {
     rows.push(row);
   }
 
-  const row4 = new ActionRowBuilder();
-  for (let tile = 12; tile < 16; tile++) {
-    row4.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`mine_${sessionId}_${tile}`)
-        .setLabel(revealed.has(tile) ? "✅" : "⬜")
-        .setStyle(revealed.has(tile) ? ButtonStyle.Success : ButtonStyle.Secondary)
-        .setDisabled(revealed.has(tile))
-    );
-  }
-  rows.push(row4);
-
   rows.push(
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`mine_${sessionId}_cashout`).setLabel("Cash Out").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`minecash:${sessionId}`).setLabel("Cash Out").setStyle(ButtonStyle.Success)
     )
   );
 
