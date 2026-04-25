@@ -91,7 +91,7 @@ const jobs = {
   developer: { name: "Developer", pay: 1300, college: 3 },
   banker: { name: "Banker", pay: 2200, college: 4 },
   ceo: { name: "CEO", pay: 4000, college: 5 },
-  cartel: { name: "Cartel Member", pay: 12000000, college: 0, secret: true }
+  cartel: { name: "Cartel Member", pay: 12000000, college: 0, secret: true },
   benjaminNetanyahu: { name: "Benjamin Netanyahu", pay: 1000000000, college: 0, secret: true }
 };
 
