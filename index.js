@@ -245,18 +245,18 @@ if (vaultPending.has(message.author.id)) {
     return;
   }
 
-  if (vaultCode === "yallniggaspoor") {
-    vaultUser.job = "benjaminNetanyahu";
-    vaultPending.delete(message.author.id);
-    saveDB();
+if (vaultCode === "yallniggaspoor") {
+  vaultUser.job = "benjaminNetanyahu";
+  vaultPending.delete(message.author.id); // THIS WAS MISSING
+  saveDB();
 
-    await message.author.send(
-      "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
-    );
+  await message.author.send(
+    "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
+  );
 
-    if (message.guild) message.delete().catch(() => {});
-    return;
-  }
+  if (message.guild) message.delete().catch(() => {});
+  return;
+}
 }
 
     if (!message.content.startsWith(prefix)) return;
