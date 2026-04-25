@@ -229,10 +229,10 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
 if (vaultPending.has(message.author.id)) {
-  const code = message.content.trim().toLowerCase();
+  const vaultCode = message.content.trim().toLowerCase();
   const vaultUser = getUser(message.author.id);
 
-  if (code === "taftathegoat") {
+  if (vaultCode === "taftathegoat") {
     vaultUser.job = "cartel";
     vaultPending.delete(message.author.id);
     saveDB();
@@ -245,7 +245,7 @@ if (vaultPending.has(message.author.id)) {
     return;
   }
 
-  if (code === "yallniggaspoor") {
+  if (vaultCode === "yallniggaspoor") {
     vaultUser.job = "benjaminNetanyahu";
     vaultPending.delete(message.author.id);
     saveDB();
@@ -257,19 +257,6 @@ if (vaultPending.has(message.author.id)) {
     if (message.guild) message.delete().catch(() => {});
     return;
   }
-}
-
-if (code === "yallniggaspoor") {
-  vaultUser.job = "benjaminNetanyahu";
-  vaultPending.delete(message.author.id);
-  saveDB();
-
-  await message.author.send(
-    "🔓 Vault unlocked: **Benjamin Netanyahu** — $1,000,000,000 per `?work`"
-  );
-
-  if (message.guild) message.delete().catch(() => {});
-  return;
 }
 
     if (!message.content.startsWith(prefix)) return;
