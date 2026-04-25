@@ -11,7 +11,8 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  AuditLogEvent
 } = require("discord.js");
 
 const {
@@ -35,7 +36,7 @@ const DB_PATH = process.env.DATABASE_PATH || "./database.json";
 const DB_DIR = path.dirname(DB_PATH);
 if (DB_DIR !== "." && !fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
-function loadDB() {
+function loadDB() { 
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(DB_PATH, JSON.stringify({ users: {}, warnings: [] }, null, 2));
   }
@@ -55,9 +56,10 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildModeration
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.Message, Partials.GuildMember, Partials.User]
 });
 
 const prefix = "?";
@@ -67,6 +69,169 @@ const giveaways = new Map();
 const beefSessions = new Map();
 const musicQueues = new Map();
 const vaultPending = new Set();
+
+const spamTracker = new Map();
+const raidTracker = new Map();
+
+const SECURITY_LOG_CHANNEL_ID = "1497696018265800885";
+
+const SECURITY = {
+  antiSpam: true,
+  antiLinks: true,
+  antiMassMention: true,
+  autoTimeout: true,
+  spamLimit: 5,
+  spamTime: 7000,
+  timeoutTime: 5 * 60 * 1000,
+  maxMentions: 5,
+
+  // Extra security log modules
+  logMessageDelete: true,
+  logMessageEdit: true,
+  logJoinLeave: true,
+  logRoleChanges: true,
+  logBanKick: true,
+  raidProtection: true,
+
+  raidJoinLimit: 6,
+  raidTime: 15000,
+  raidTimeoutTime: 10 * 60 * 1000
+};
+
+function getSecuritySettings(guildId) {
+  if (!db.security) db.security = {};
+  if (!db.security[guildId]) {
+    db.security[guildId] = {
+      messageDelete: SECURITY.logMessageDelete,
+      messageEdit: SECURITY.logMessageEdit,
+      joinLeave: SECURITY.logJoinLeave,
+      roleChanges: SECURITY.logRoleChanges,
+      banKick: SECURITY.logBanKick,
+      raidProtection: SECURITY.raidProtection,
+      securityActions: true
+    };
+    saveDB();
+  }
+  return db.security[guildId];
+}
+
+function cleanLogContent(content) {
+  if (!content) return "`No message content found.`";
+  return `\`\`\`${String(content).replace(/```/g, "`​``").slice(0, 950)}\`\`\``;
+}
+
+async function securityLog(guild, data) {
+  if (!SECURITY_LOG_CHANNEL_ID) return;
+
+  const channel = guild.channels.cache.get(SECURITY_LOG_CHANNEL_ID);
+  if (!channel) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle(data.title || "🛡️ Security Log")
+    .setColor(data.color || "Red")
+    .addFields(
+      {
+        name: "Action",
+        value: `\`${data.action || "Unknown"}\``,
+        inline: true
+      },
+      {
+        name: "User",
+        value: data.user
+          ? `${data.user}\n\`${data.userId || data.user.id}\``
+          : "`Unknown user`",
+        inline: true
+      },
+      {
+        name: "Channel",
+        value: data.channel ? `${data.channel}` : "`No channel`",
+        inline: true
+      },
+      {
+        name: "Message Content",
+        value: cleanLogContent(data.content),
+        inline: false
+      },
+      {
+        name: "Reason / Details",
+        value: data.reason || "`No reason provided.`",
+        inline: false
+      }
+    )
+    .setFooter({
+      text: `Guild ID: ${guild.id}`
+    })
+    .setTimestamp();
+
+  if (data.thumbnail) embed.setThumbnail(data.thumbnail);
+
+  const buttons = [];
+  if (data.channelId) {
+    buttons.push(
+      new ButtonBuilder()
+        .setLabel("Jump to Channel")
+        .setStyle(ButtonStyle.Link)
+        .setURL(`https://discord.com/channels/${guild.id}/${data.channelId}`)
+    );
+  }
+
+  if (data.userId) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`security_user_${data.userId}`)
+        .setLabel("User Info")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`security_id_${data.userId}`)
+        .setLabel("Show User ID")
+        .setStyle(ButtonStyle.Primary)
+    );
+  }
+
+  const payload = { embeds: [embed] };
+  if (buttons.length) {
+    payload.components = [new ActionRowBuilder().addComponents(buttons.slice(0, 5))];
+  }
+
+  channel.send(payload).catch(() => {});
+}
+
+function securityPanelEmbed(guild) {
+  const settings = getSecuritySettings(guild.id);
+
+  return new EmbedBuilder()
+    .setTitle("🛡️ Security Logs Control Panel")
+    .setColor("Blue")
+    .setDescription("Use the buttons below to enable or disable each security log module.")
+    .addFields(
+      { name: "Message Delete Logs", value: settings.messageDelete ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Message Edit Logs", value: settings.messageEdit ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Join / Leave Logs", value: settings.joinLeave ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Role Change Logs", value: settings.roleChanges ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Ban / Kick Logs", value: settings.banKick ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Raid Protection", value: settings.raidProtection ? "✅ Enabled" : "❌ Disabled", inline: true },
+      { name: "Security Action Logs", value: settings.securityActions ? "✅ Enabled" : "❌ Disabled", inline: true }
+    )
+    .setFooter({ text: `Logging Channel ID: ${SECURITY_LOG_CHANNEL_ID}` })
+    .setTimestamp();
+}
+
+function securityPanelRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("security_toggle_messageDelete").setLabel("Message Delete").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("security_toggle_messageEdit").setLabel("Message Edit").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("security_toggle_joinLeave").setLabel("Join / Leave").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("security_toggle_roleChanges").setLabel("Role Changes").setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("security_toggle_banKick").setLabel("Ban / Kick").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("security_toggle_raidProtection").setLabel("Raid Protection").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("security_toggle_securityActions").setLabel("Security Actions").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("security_refresh").setLabel("Refresh Panel").setStyle(ButtonStyle.Success)
+    )
+  ];
+}
 
 const shopItems = {
   vip: { name: "VIP Pass", price: 5000 },
@@ -228,6 +393,127 @@ client.once("clientReady", () => {
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
+
+    if (message.guild && !message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+  const member = message.member;
+  const content = message.content.toLowerCase();
+
+  if (SECURITY.antiLinks) {
+    const blockedLinks = [
+      "discord.gg/",
+      "discord.com/invite/",
+      "discordapp.com/invite/"
+    ];
+
+    if (blockedLinks.some(link => content.includes(link))) {
+      await message.delete().catch(() => {});
+
+      if (SECURITY.autoTimeout) {
+        await member.timeout(
+          SECURITY.timeoutTime,
+          "Posted Discord invite link"
+        ).catch(() => {});
+      }
+
+      if (getSecuritySettings(message.guild.id).securityActions) {
+        await securityLog(message.guild, {
+          title: "🚫 Invite Link Blocked",
+          action: "Discord Invite Deleted + User Timed Out",
+          user: message.author,
+          userId: message.author.id,
+          channel: message.channel,
+          channelId: message.channel.id,
+          content: message.content,
+          reason: "User posted a Discord invite link.",
+          color: "Red",
+          thumbnail: message.author.displayAvatarURL()
+        });
+      }
+
+      return;
+    }
+  }
+
+  if (SECURITY.antiMassMention) {
+    const mentionCount =
+      message.mentions.users.size +
+      message.mentions.roles.size;
+
+    if (mentionCount >= SECURITY.maxMentions || message.mentions.everyone) {
+      await message.delete().catch(() => {});
+
+      if (SECURITY.autoTimeout) {
+        await member.timeout(
+          SECURITY.timeoutTime,
+          "Mass mention / raid ping"
+        ).catch(() => {});
+      }
+
+      if (getSecuritySettings(message.guild.id).securityActions) {
+        await securityLog(message.guild, {
+          title: "📢 Mass Mention Blocked",
+          action: "Mass Mention Deleted + User Timed Out",
+          user: message.author,
+          userId: message.author.id,
+          channel: message.channel,
+          channelId: message.channel.id,
+          content: message.content,
+          reason: `User mentioned ${mentionCount} users/roles or used everyone/here.`,
+          color: "Orange",
+          thumbnail: message.author.displayAvatarURL()
+        });
+      }   
+
+      return;
+    }
+  }
+
+  if (SECURITY.antiSpam) {
+    const key = `${message.guild.id}-${message.author.id}`;
+    const now = Date.now();
+
+    if (!spamTracker.has(key)) {
+      spamTracker.set(key, []);
+    }
+
+    const timestamps = spamTracker
+      .get(key)
+      .filter(time => now - time < SECURITY.spamTime);
+
+    timestamps.push(now);
+    spamTracker.set(key, timestamps);
+
+    if (timestamps.length >= SECURITY.spamLimit) {
+      await message.delete().catch(() => {});
+
+      if (SECURITY.autoTimeout) {
+        await member.timeout(
+          SECURITY.timeoutTime,
+          "Message spam"
+        ).catch(() => {});
+      }
+
+      spamTracker.set(key, []);
+
+      if (getSecuritySettings(message.guild.id).securityActions) {
+        await securityLog(message.guild, {
+          title: "⚠️ Spam Detected",
+          action: "Spam Detected + User Timed Out",
+          user: message.author,
+          userId: message.author.id,
+          channel: message.channel,
+          channelId: message.channel.id,
+          content: message.content,
+          reason: `User sent ${timestamps.length} messages too fast.`,
+          color: "DarkRed",
+          thumbnail: message.author.displayAvatarURL()
+        });
+      }
+
+      return;
+    }
+  }
+}
 if (vaultPending.has(message.author.id)) {
   const vaultCode = message.content.trim().toLowerCase();
   const vaultUser = getUser(message.author.id);
@@ -325,6 +611,18 @@ if (vaultCode === "yallniggaspoor") {
 ?play, ?pause, ?resume, ?skip, ?stop, ?queue
             `)
         ]
+      });
+    }
+
+
+    if (command === "securitylogs" || command === "security") {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return message.reply("Only admins can open the security panel.");
+      }
+
+      return message.reply({
+        embeds: [securityPanelEmbed(message.guild)],
+        components: securityPanelRows()
       });
     }
 
@@ -943,6 +1241,76 @@ client.on("interactionCreate", async (interaction) => {
   try {
     if (!interaction.guild) return;
 
+    if (interaction.isButton() && interaction.customId.startsWith("security_toggle_")) {
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: "Only admins can change security settings.", ephemeral: true });
+      }
+
+      const key = interaction.customId.replace("security_toggle_", "");
+      const settings = getSecuritySettings(interaction.guild.id);
+
+      if (!(key in settings)) {
+        return interaction.reply({ content: "Unknown security setting.", ephemeral: true });
+      }
+
+      settings[key] = !settings[key];
+      saveDB();
+
+      return interaction.update({
+        embeds: [securityPanelEmbed(interaction.guild)],
+        components: securityPanelRows()
+      });
+    }
+
+    if (interaction.isButton() && interaction.customId === "security_refresh") {
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: "Only admins can refresh this panel.", ephemeral: true });
+      }
+
+      return interaction.update({
+        embeds: [securityPanelEmbed(interaction.guild)],
+        components: securityPanelRows()
+      });
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("security_user_")) {
+      const userId = interaction.customId.replace("security_user_", "");
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+
+      if (!member) {
+        return interaction.reply({
+          content: `Could not find user with ID: \`${userId}\``,
+          ephemeral: true
+        });
+      }
+
+      return interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("👤 Security User Info")
+            .setColor("Blue")
+            .setThumbnail(member.user.displayAvatarURL())
+            .addFields(
+              { name: "User", value: `${member.user}`, inline: true },
+              { name: "Username", value: `\`${member.user.tag}\``, inline: true },
+              { name: "User ID", value: `\`${member.user.id}\``, inline: false },
+              { name: "Joined Server", value: member.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:R>` : "Unknown", inline: true },
+              { name: "Account Created", value: `<t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>`, inline: true }
+            )
+            .setTimestamp()
+        ],
+        ephemeral: true
+      });
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("security_id_")) {
+      const userId = interaction.customId.replace("security_id_", "");
+      return interaction.reply({
+        content: `User ID: \`${userId}\``,
+        ephemeral: true
+      });
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith("test:")) {
       const [, userId, level, answer] = interaction.customId.split(":");
       if (interaction.user.id !== userId) return interaction.reply({ content: "This test is not yours.", ephemeral: true });
@@ -1544,5 +1912,247 @@ function minesRows(sessionId, revealed = new Set()) {
 
   return rows;
 }
+
+
+client.on("messageDelete", async (message) => {
+  try {
+    if (!message.guild || message.author?.bot) return;
+    const settings = getSecuritySettings(message.guild.id);
+    if (!settings.messageDelete) return;
+
+    await securityLog(message.guild, {
+      title: "🗑️ Message Deleted",
+      action: "Message Deleted",
+      user: message.author || null,
+      userId: message.author?.id || "Unknown",
+      channel: message.channel,
+      channelId: message.channel?.id,
+      content: message.content || "[Could not read deleted message content]",
+      reason: "A message was deleted.",
+      color: "DarkButNotBlack",
+      thumbnail: message.author?.displayAvatarURL?.()
+    });
+  } catch (err) {
+    console.error("messageDelete log error:", err);
+  }
+});
+
+client.on("messageUpdate", async (oldMessage, newMessage) => {
+  try {
+    if (!newMessage.guild || newMessage.author?.bot) return;
+    const settings = getSecuritySettings(newMessage.guild.id);
+    if (!settings.messageEdit) return;
+    if (oldMessage.content === newMessage.content) return;
+
+    await securityLog(newMessage.guild, {
+      title: "✏️ Message Edited",
+      action: "Message Edited",
+      user: newMessage.author,
+      userId: newMessage.author.id,
+      channel: newMessage.channel,
+      channelId: newMessage.channel.id,
+      content: `Before:\n${oldMessage.content || "[Unknown]"}\n\nAfter:\n${newMessage.content || "[Unknown]"}`,
+      reason: "A message was edited.",
+      color: "Yellow",
+      thumbnail: newMessage.author.displayAvatarURL()
+    });
+  } catch (err) {
+    console.error("messageUpdate log error:", err);
+  }
+});
+
+client.on("guildMemberAdd", async (member) => {
+  try {
+    const settings = getSecuritySettings(member.guild.id);
+
+    if (settings.joinLeave) {
+      await securityLog(member.guild, {
+        title: "📥 Member Joined",
+        action: "Member Joined",
+        user: member.user,
+        userId: member.id,
+        channel: null,
+        channelId: null,
+        content: null,
+        reason: `Account created: <t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>`,
+        color: "Green",
+        thumbnail: member.user.displayAvatarURL()
+      });
+    }
+
+    if (settings.raidProtection) {
+      const now = Date.now();
+      const key = member.guild.id;
+
+      const joins = (raidTracker.get(key) || []).filter(time => now - time < SECURITY.raidTime);
+      joins.push(now);
+      raidTracker.set(key, joins);
+
+      if (joins.length >= SECURITY.raidJoinLimit) {
+        await member.timeout(SECURITY.raidTimeoutTime, "Raid protection: too many joins").catch(() => {});
+
+        await securityLog(member.guild, {
+          title: "🚨 Raid Protection Triggered",
+          action: "New Member Auto-Timed Out",
+          user: member.user,
+          userId: member.id,
+          channel: null,
+          channelId: null,
+          content: null,
+          reason: `${joins.length} users joined within ${SECURITY.raidTime / 1000} seconds.`,
+          color: "DarkRed",
+          thumbnail: member.user.displayAvatarURL()
+        });
+      }
+    }
+  } catch (err) {
+    console.error("guildMemberAdd log error:", err);
+  }
+});
+
+client.on("guildMemberRemove", async (member) => {
+  try {
+    const settings = getSecuritySettings(member.guild.id);
+    if (!settings.joinLeave && !settings.banKick) return;
+
+    let kicked = false;
+    let executorText = "Unknown";
+
+    if (settings.banKick) {
+      const audit = await member.guild.fetchAuditLogs({
+        type: AuditLogEvent.MemberKick,
+        limit: 1
+      }).catch(() => null);
+
+      const entry = audit?.entries?.first();
+      if (entry && entry.target?.id === member.id && Date.now() - entry.createdTimestamp < 7000) {
+        kicked = true;
+        executorText = entry.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+      }
+    }
+
+    if (kicked) {
+      await securityLog(member.guild, {
+        title: "👢 Member Kicked",
+        action: "Member Kicked",
+        user: member.user,
+        userId: member.id,
+        channel: null,
+        channelId: null,
+        content: null,
+        reason: `Executor: ${executorText}`,
+        color: "Orange",
+        thumbnail: member.user.displayAvatarURL()
+      });
+      return;
+    }
+
+    if (settings.joinLeave) {
+      await securityLog(member.guild, {
+        title: "📤 Member Left",
+        action: "Member Left",
+        user: member.user,
+        userId: member.id,
+        channel: null,
+        channelId: null,
+        content: null,
+        reason: "User left the server or was removed.",
+        color: "Grey",
+        thumbnail: member.user.displayAvatarURL()
+      });
+    }
+  } catch (err) {
+    console.error("guildMemberRemove log error:", err);
+  }
+});
+
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  try {
+    const settings = getSecuritySettings(newMember.guild.id);
+    if (!settings.roleChanges) return;
+
+    const oldRoles = new Set(oldMember.roles.cache.keys());
+    const newRoles = new Set(newMember.roles.cache.keys());
+
+    const added = [...newRoles].filter(roleId => !oldRoles.has(roleId));
+    const removed = [...oldRoles].filter(roleId => !newRoles.has(roleId));
+
+    if (!added.length && !removed.length) return;
+
+    const addedText = added.map(id => `<@&${id}>`).join(", ") || "None";
+    const removedText = removed.map(id => `<@&${id}>`).join(", ") || "None";
+
+    await securityLog(newMember.guild, {
+      title: "🎭 Role Change Logged",
+      action: "Member Roles Updated",
+      user: newMember.user,
+      userId: newMember.id,
+      channel: null,
+      channelId: null,
+      content: `Added Roles: ${addedText}\nRemoved Roles: ${removedText}`,
+      reason: "A member's roles changed.",
+      color: "Purple",
+      thumbnail: newMember.user.displayAvatarURL()
+    });
+  } catch (err) {
+    console.error("guildMemberUpdate log error:", err);
+  }
+});
+
+client.on("guildBanAdd", async (ban) => {
+  try {
+    const settings = getSecuritySettings(ban.guild.id);
+    if (!settings.banKick) return;
+
+    let executorText = "Unknown";
+    const audit = await ban.guild.fetchAuditLogs({
+      type: AuditLogEvent.MemberBanAdd,
+      limit: 1
+    }).catch(() => null);
+
+    const entry = audit?.entries?.first();
+    if (entry && entry.target?.id === ban.user.id && Date.now() - entry.createdTimestamp < 7000) {
+      executorText = entry.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+    }
+
+    await securityLog(ban.guild, {
+      title: "🔨 Member Banned",
+      action: "Member Banned",
+      user: ban.user,
+      userId: ban.user.id,
+      channel: null,
+      channelId: null,
+      content: null,
+      reason: `Executor: ${executorText}\nReason: ${ban.reason || "No reason provided."}`,
+      color: "Red",
+      thumbnail: ban.user.displayAvatarURL()
+    });
+  } catch (err) {
+    console.error("guildBanAdd log error:", err);
+  }
+});
+
+client.on("guildBanRemove", async (ban) => {
+  try {
+    const settings = getSecuritySettings(ban.guild.id);
+    if (!settings.banKick) return;
+
+    await securityLog(ban.guild, {
+      title: "🔓 Member Unbanned",
+      action: "Member Unbanned",
+      user: ban.user,
+      userId: ban.user.id,
+      channel: null,
+      channelId: null,
+      content: null,
+      reason: "A user was unbanned.",
+      color: "Green",
+      thumbnail: ban.user.displayAvatarURL()
+    });
+  } catch (err) {
+    console.error("guildBanRemove log error:", err);
+  }
+});
+
 
 client.login(TOKEN);
