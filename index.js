@@ -221,7 +221,7 @@ function evaluatePoker(hand) {
   return { name: "High Card", rank: 0, multi: 0 };
 }
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`Bot online as ${client.user.tag}`);
 });
 
