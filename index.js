@@ -82,7 +82,7 @@ const SECURITY = {
   autoTimeout: true,
   spamLimit: 5,
   spamTime: 7000,
-  timeoutTime: 5 * 60 * 1000,
+  timeoutTime: 60 * 1000,
   maxMentions: 5,
 
   // Extra security log modules
