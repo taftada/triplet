@@ -6,11 +6,13 @@
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {
-    "@discordjs/voice": "latest",
-    "discord.js": "latest",
-    "dotenv": "latest",
-    "ffmpeg-static": "latest",
-    "play-dl": "latest"
-  }
+ "dependencies": {
+  "@discordjs/opus": "latest",
+  "@discordjs/voice": "latest",
+  "discord.js": "latest",
+  "dotenv": "latest",
+  "ffmpeg-static": "latest",
+  "libsodium-wrappers": "latest",
+  "play-dl": "latest"
 }
+  }
