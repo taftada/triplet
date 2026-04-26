@@ -7,12 +7,12 @@ const {
   GatewayIntentBits,
   Partials,
   EmbedBuilder,
+  AuditLogEvent,
   PermissionsBitField,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
-  AuditLogEvent
+  StringSelectMenuBuilder
 } = require("discord.js");
 
 const {
@@ -56,10 +56,9 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildModeration
+    GatewayIntentBits.DirectMessages
   ],
-  partials: [Partials.Channel, Partials.Message, Partials.GuildMember, Partials.User]
+  partials: [Partials.Channel]
 });
 
 const prefix = "?";
@@ -69,6 +68,8 @@ const giveaways = new Map();
 const beefSessions = new Map();
 const musicQueues = new Map();
 const vaultPending = new Set();
+
+const AUTO_DISCONNECT_TIME = 30 * 1000; // 30 seconds
 
 const spamTracker = new Map();
 const raidTracker = new Map();
@@ -92,33 +93,9 @@ const SECURITY = {
   logRoleChanges: true,
   logBanKick: true,
   raidProtection: true,
-
-  raidJoinLimit: 6,
-  raidTime: 15000,
-  raidTimeoutTime: 10 * 60 * 1000
+  raidJoinLimit: 5,
+  raidJoinTime: 10 * 1000
 };
-
-function getSecuritySettings(guildId) {
-  if (!db.security) db.security = {};
-  if (!db.security[guildId]) {
-    db.security[guildId] = {
-      messageDelete: SECURITY.logMessageDelete,
-      messageEdit: SECURITY.logMessageEdit,
-      joinLeave: SECURITY.logJoinLeave,
-      roleChanges: SECURITY.logRoleChanges,
-      banKick: SECURITY.logBanKick,
-      raidProtection: SECURITY.raidProtection,
-      securityActions: true
-    };
-    saveDB();
-  }
-  return db.security[guildId];
-}
-
-function cleanLogContent(content) {
-  if (!content) return "`No message content found.`";
-  return `\`\`\`${String(content).replace(/```/g, "`​``").slice(0, 950)}\`\`\``;
-}
 
 async function securityLog(guild, data) {
   if (!SECURITY_LOG_CHANNEL_ID) return;
@@ -127,33 +104,33 @@ async function securityLog(guild, data) {
   if (!channel) return;
 
   const embed = new EmbedBuilder()
-    .setTitle(data.title || "🛡️ Security Log")
+    .setTitle("🛡️ Security Action Logged")
     .setColor(data.color || "Red")
     .addFields(
       {
         name: "Action",
-        value: `\`${data.action || "Unknown"}\``,
+        value: `\`${data.action}\``,
         inline: true
       },
       {
         name: "User",
-        value: data.user
-          ? `${data.user}\n\`${data.userId || data.user.id}\``
-          : "`Unknown user`",
+        value: `${data.user} \n\`${data.userId}\``,
         inline: true
       },
       {
         name: "Channel",
-        value: data.channel ? `${data.channel}` : "`No channel`",
+        value: `${data.channel}`,
         inline: true
       },
       {
         name: "Message Content",
-        value: cleanLogContent(data.content),
+        value: data.content
+          ? `\`\`\`${data.content.slice(0, 900)}\`\`\``
+          : "`No message content found.`",
         inline: false
       },
       {
-        name: "Reason / Details",
+        name: "Reason",
         value: data.reason || "`No reason provided.`",
         inline: false
       }
@@ -163,74 +140,27 @@ async function securityLog(guild, data) {
     })
     .setTimestamp();
 
-  if (data.thumbnail) embed.setThumbnail(data.thumbnail);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel("Jump to Channel")
+      .setStyle(ButtonStyle.Link)
+      .setURL(`https://discord.com/channels/${guild.id}/${data.channelId}`),
 
-  const buttons = [];
-  if (data.channelId) {
-    buttons.push(
-      new ButtonBuilder()
-        .setLabel("Jump to Channel")
-        .setStyle(ButtonStyle.Link)
-        .setURL(`https://discord.com/channels/${guild.id}/${data.channelId}`)
-    );
-  }
+    new ButtonBuilder()
+      .setCustomId(`security_user_${data.userId}`)
+      .setLabel("User Info")
+      .setStyle(ButtonStyle.Secondary),
 
-  if (data.userId) {
-    buttons.push(
-      new ButtonBuilder()
-        .setCustomId(`security_user_${data.userId}`)
-        .setLabel("User Info")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`security_id_${data.userId}`)
-        .setLabel("Show User ID")
-        .setStyle(ButtonStyle.Primary)
-    );
-  }
+    new ButtonBuilder()
+      .setCustomId(`security_id_${data.userId}`)
+      .setLabel("Copy User ID")
+      .setStyle(ButtonStyle.Primary)
+  );
 
-  const payload = { embeds: [embed] };
-  if (buttons.length) {
-    payload.components = [new ActionRowBuilder().addComponents(buttons.slice(0, 5))];
-  }
-
-  channel.send(payload).catch(() => {});
-}
-
-function securityPanelEmbed(guild) {
-  const settings = getSecuritySettings(guild.id);
-
-  return new EmbedBuilder()
-    .setTitle("🛡️ Security Logs Control Panel")
-    .setColor("Blue")
-    .setDescription("Use the buttons below to enable or disable each security log module.")
-    .addFields(
-      { name: "Message Delete Logs", value: settings.messageDelete ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Message Edit Logs", value: settings.messageEdit ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Join / Leave Logs", value: settings.joinLeave ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Role Change Logs", value: settings.roleChanges ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Ban / Kick Logs", value: settings.banKick ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Raid Protection", value: settings.raidProtection ? "✅ Enabled" : "❌ Disabled", inline: true },
-      { name: "Security Action Logs", value: settings.securityActions ? "✅ Enabled" : "❌ Disabled", inline: true }
-    )
-    .setFooter({ text: `Logging Channel ID: ${SECURITY_LOG_CHANNEL_ID}` })
-    .setTimestamp();
-}
-
-function securityPanelRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("security_toggle_messageDelete").setLabel("Message Delete").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("security_toggle_messageEdit").setLabel("Message Edit").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("security_toggle_joinLeave").setLabel("Join / Leave").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("security_toggle_roleChanges").setLabel("Role Changes").setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("security_toggle_banKick").setLabel("Ban / Kick").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("security_toggle_raidProtection").setLabel("Raid Protection").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("security_toggle_securityActions").setLabel("Security Actions").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("security_refresh").setLabel("Refresh Panel").setStyle(ButtonStyle.Success)
-    )
-  ];
+  channel.send({
+    embeds: [embed],
+    components: [row]
+  }).catch(() => {});
 }
 
 const shopItems = {
@@ -395,125 +325,112 @@ client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
 
     if (message.guild && !message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-  const member = message.member;
-  const content = message.content.toLowerCase();
+      const member = message.member;
+      const content = message.content.toLowerCase();
 
-  if (SECURITY.antiLinks) {
-    const blockedLinks = [
-      "discord.gg/",
-      "discord.com/invite/",
-      "discordapp.com/invite/"
-    ];
+      // ANTI-LINK / DISCORD INVITES
+      if (SECURITY.antiLinks) {
+        const blockedLinks = [
+          "discord.gg/",
+          "discord.com/invite/",
+          "discordapp.com/invite/"
+        ];
 
-    if (blockedLinks.some(link => content.includes(link))) {
-      await message.delete().catch(() => {});
+        if (blockedLinks.some(link => content.includes(link))) {
+          await message.delete().catch(() => {});
 
-      if (SECURITY.autoTimeout) {
-        await member.timeout(
-          SECURITY.timeoutTime,
-          "Posted Discord invite link"
-        ).catch(() => {});
+          if (SECURITY.autoTimeout) {
+            await member.timeout(
+              SECURITY.timeoutTime,
+              "Posted Discord invite link"
+            ).catch(() => {});
+          }
+
+          await securityLog(message.guild, {
+            action: "Discord Invite Deleted + User Timed Out",
+            user: message.author,
+            userId: message.author.id,
+            channel: message.channel,
+            channelId: message.channel.id,
+            content: message.content,
+            reason: "User posted a Discord invite link.",
+            color: "Red"
+          });
+
+          return;
+        }
       }
 
-      if (getSecuritySettings(message.guild.id).securityActions) {
-        await securityLog(message.guild, {
-          title: "🚫 Invite Link Blocked",
-          action: "Discord Invite Deleted + User Timed Out",
-          user: message.author,
-          userId: message.author.id,
-          channel: message.channel,
-          channelId: message.channel.id,
-          content: message.content,
-          reason: "User posted a Discord invite link.",
-          color: "Red",
-          thumbnail: message.author.displayAvatarURL()
-        });
+      // ANTI-MASS MENTION
+      if (SECURITY.antiMassMention) {
+        const mentionCount = message.mentions.users.size + message.mentions.roles.size;
+
+        if (mentionCount >= SECURITY.maxMentions || message.mentions.everyone) {
+          await message.delete().catch(() => {});
+
+          if (SECURITY.autoTimeout) {
+            await member.timeout(
+              SECURITY.timeoutTime,
+              "Mass mention / raid ping"
+            ).catch(() => {});
+          }
+
+          await securityLog(message.guild, {
+            action: "Mass Mention Deleted + User Timed Out",
+            user: message.author,
+            userId: message.author.id,
+            channel: message.channel,
+            channelId: message.channel.id,
+            content: message.content,
+            reason: `User mentioned ${mentionCount} users/roles or used everyone/here.`,
+            color: "Orange"
+          });
+
+          return;
+        }
       }
 
-      return;
+      // ANTI-SPAM
+      if (SECURITY.antiSpam) {
+        const key = `${message.guild.id}-${message.author.id}`;
+        const now = Date.now();
+
+        if (!spamTracker.has(key)) spamTracker.set(key, []);
+
+        const timestamps = spamTracker
+          .get(key)
+          .filter(time => now - time < SECURITY.spamTime);
+
+        timestamps.push(now);
+        spamTracker.set(key, timestamps);
+
+        if (timestamps.length >= SECURITY.spamLimit) {
+          await message.delete().catch(() => {});
+
+          if (SECURITY.autoTimeout) {
+            await member.timeout(
+              SECURITY.timeoutTime,
+              "Message spam"
+            ).catch(() => {});
+          }
+
+          spamTracker.set(key, []);
+
+          await securityLog(message.guild, {
+            action: "Spam Detected + User Timed Out",
+            user: message.author,
+            userId: message.author.id,
+            channel: message.channel,
+            channelId: message.channel.id,
+            content: message.content,
+            reason: `User sent ${timestamps.length} messages too fast.`,
+            color: "DarkRed"
+          });
+
+          return;
+        }
+      }
     }
-  }
-
-  if (SECURITY.antiMassMention) {
-    const mentionCount =
-      message.mentions.users.size +
-      message.mentions.roles.size;
-
-    if (mentionCount >= SECURITY.maxMentions || message.mentions.everyone) {
-      await message.delete().catch(() => {});
-
-      if (SECURITY.autoTimeout) {
-        await member.timeout(
-          SECURITY.timeoutTime,
-          "Mass mention / raid ping"
-        ).catch(() => {});
-      }
-
-      if (getSecuritySettings(message.guild.id).securityActions) {
-        await securityLog(message.guild, {
-          title: "📢 Mass Mention Blocked",
-          action: "Mass Mention Deleted + User Timed Out",
-          user: message.author,
-          userId: message.author.id,
-          channel: message.channel,
-          channelId: message.channel.id,
-          content: message.content,
-          reason: `User mentioned ${mentionCount} users/roles or used everyone/here.`,
-          color: "Orange",
-          thumbnail: message.author.displayAvatarURL()
-        });
-      }   
-
-      return;
-    }
-  }
-
-  if (SECURITY.antiSpam) {
-    const key = `${message.guild.id}-${message.author.id}`;
-    const now = Date.now();
-
-    if (!spamTracker.has(key)) {
-      spamTracker.set(key, []);
-    }
-
-    const timestamps = spamTracker
-      .get(key)
-      .filter(time => now - time < SECURITY.spamTime);
-
-    timestamps.push(now);
-    spamTracker.set(key, timestamps);
-
-    if (timestamps.length >= SECURITY.spamLimit) {
-      await message.delete().catch(() => {});
-
-      if (SECURITY.autoTimeout) {
-        await member.timeout(
-          SECURITY.timeoutTime,
-          "Message spam"
-        ).catch(() => {});
-      }
-
-      spamTracker.set(key, []);
-
-      if (getSecuritySettings(message.guild.id).securityActions) {
-        await securityLog(message.guild, {
-          title: "⚠️ Spam Detected",
-          action: "Spam Detected + User Timed Out",
-          user: message.author,
-          userId: message.author.id,
-          channel: message.channel,
-          channelId: message.channel.id,
-          content: message.content,
-          reason: `User sent ${timestamps.length} messages too fast.`,
-          color: "DarkRed",
-          thumbnail: message.author.displayAvatarURL()
-        });
-      }
-
-      return;
-    }
-  }
-}
 if (vaultPending.has(message.author.id)) {
   const vaultCode = message.content.trim().toLowerCase();
   const vaultUser = getUser(message.author.id);
@@ -614,16 +531,12 @@ if (vaultCode === "yallniggaspoor") {
       });
     }
 
-
-    if (command === "securitylogs" || command === "security") {
+    if (command === "securitylogs") {
       if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-        return message.reply("Only admins can open the security panel.");
+        return message.reply("Only admins can open the security log panel.");
       }
 
-      return message.reply({
-        embeds: [securityPanelEmbed(message.guild)],
-        components: securityPanelRows()
-      });
+      return message.reply(buildSecurityPanel(message.guild.id));
     }
 
     if (command === "balance" || command === "bal") {
@@ -1111,7 +1024,7 @@ Level 5: CEO — $4,000
       return message.reply(target.displayAvatarURL({ size: 1024 }));
     }
 
-    if (command === "play") {
+    if (command === "play" || command === "p") {
       const query = args.join(" ");
       if (!query) return message.reply("Use `?play song name or url`");
 
@@ -1127,7 +1040,7 @@ Level 5: CEO — $4,000
           player,
           songs: [],
           connection: null,
-          text: message.channel,
+          text: voice,
           nowPlaying: null
         };
 
@@ -1143,7 +1056,12 @@ Level 5: CEO — $4,000
       const results = await play.search(query, { limit: 1 });
       if (!results.length) return message.reply("No song found.");
 
-      const song = { title: results[0].title, url: results[0].url, requestedBy: message.author.id };
+      const song = {
+        title: results[0].title,
+        url: results[0].url,
+        requestedBy: message.author.id,
+        thumbnail: results[0].thumbnails?.[0]?.url || results[0].thumbnail || null
+      };
       queue.songs.push(song);
 
       queue.connection = joinVoiceChannel({
@@ -1210,6 +1128,18 @@ async function playNext(guildId) {
   const song = queue.songs.shift();
   if (!song) {
     queue.nowPlaying = null;
+
+    setTimeout(() => {
+      const currentQueue = musicQueues.get(guildId);
+      if (!currentQueue) return;
+
+      if (!currentQueue.songs.length && !currentQueue.nowPlaying) {
+        currentQueue.text.send("🔌 Leaving voice channel — queue is empty.").catch(() => {});
+        currentQueue.connection?.destroy();
+        musicQueues.delete(guildId);
+      }
+    }, AUTO_DISCONNECT_TIME);
+
     return;
   }
 
@@ -1219,22 +1149,29 @@ async function playNext(guildId) {
   const resource = createAudioResource(stream.stream, { inputType: stream.type });
   queue.player.play(resource);
 
+  const thumbnail = song.thumbnail || "https://cdn-icons-png.flaticon.com/512/727/727245.png";
+
   queue.text.send({
     embeds: [
       new EmbedBuilder()
-        .setTitle("🎵 Now Playing")
-        .setColor("Blue")
-        .setDescription(`**${song.title}**\nRequested by <@${song.requestedBy}>`)
+        .setColor("Green")
+        .setAuthor({ name: "Now Playing", iconURL: thumbnail })
+        .setTitle(song.title)
+        .setURL(song.url)
+        .setThumbnail(thumbnail)
+        .setDescription(`Requested by <@${song.requestedBy}>`)
+        .setFooter({ text: "Triplet Music Player" })
+        .setTimestamp()
     ],
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setEmoji("▶️").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger)
       )
     ]
-  });
+  }).catch(() => {});
 }
 
 client.on("interactionCreate", async (interaction) => {
@@ -1247,30 +1184,12 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const key = interaction.customId.replace("security_toggle_", "");
-      const settings = getSecuritySettings(interaction.guild.id);
-
-      if (!(key in settings)) {
+      if (!(key in SECURITY)) {
         return interaction.reply({ content: "Unknown security setting.", ephemeral: true });
       }
 
-      settings[key] = !settings[key];
-      saveDB();
-
-      return interaction.update({
-        embeds: [securityPanelEmbed(interaction.guild)],
-        components: securityPanelRows()
-      });
-    }
-
-    if (interaction.isButton() && interaction.customId === "security_refresh") {
-      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-        return interaction.reply({ content: "Only admins can refresh this panel.", ephemeral: true });
-      }
-
-      return interaction.update({
-        embeds: [securityPanelEmbed(interaction.guild)],
-        components: securityPanelRows()
-      });
+      SECURITY[key] = !SECURITY[key];
+      return interaction.update(buildSecurityPanel(interaction.guild.id));
     }
 
     if (interaction.isButton() && interaction.customId.startsWith("security_user_")) {
@@ -1278,10 +1197,7 @@ client.on("interactionCreate", async (interaction) => {
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
 
       if (!member) {
-        return interaction.reply({
-          content: `Could not find user with ID: \`${userId}\``,
-          ephemeral: true
-        });
+        return interaction.reply({ content: `Could not find user with ID: \`${userId}\``, ephemeral: true });
       }
 
       return interaction.reply({
@@ -1305,10 +1221,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isButton() && interaction.customId.startsWith("security_id_")) {
       const userId = interaction.customId.replace("security_id_", "");
-      return interaction.reply({
-        content: `User ID: \`${userId}\``,
-        ephemeral: true
-      });
+      return interaction.reply({ content: `User ID: \`${userId}\``, ephemeral: true });
     }
 
     if (interaction.isButton() && interaction.customId.startsWith("test:")) {
@@ -1914,23 +1827,100 @@ function minesRows(sessionId, revealed = new Set()) {
 }
 
 
+function buildSecurityPanel(guildId) {
+  const row1 = new ActionRowBuilder().addComponents(
+    securityToggleButton("antiSpam", "Anti-Spam"),
+    securityToggleButton("antiLinks", "Anti-Link"),
+    securityToggleButton("antiMassMention", "Mass Mention"),
+    securityToggleButton("autoTimeout", "Auto Timeout")
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    securityToggleButton("logMessageDelete", "Delete Logs"),
+    securityToggleButton("logMessageEdit", "Edit Logs"),
+    securityToggleButton("logJoinLeave", "Join/Leave"),
+    securityToggleButton("raidProtection", "Raid Protect")
+  );
+
+  const row3 = new ActionRowBuilder().addComponents(
+    securityToggleButton("logRoleChanges", "Role Logs"),
+    securityToggleButton("logBanKick", "Ban/Kick Logs")
+  );
+
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("🛡️ Triplet Security Control Panel")
+        .setColor("DarkBlue")
+        .setDescription(
+          `**Anti-Spam:** ${statusEmoji(SECURITY.antiSpam)}\n` +
+          `**Anti-Link:** ${statusEmoji(SECURITY.antiLinks)}\n` +
+          `**Anti-Mass Mention:** ${statusEmoji(SECURITY.antiMassMention)}\n` +
+          `**Auto Timeout:** ${statusEmoji(SECURITY.autoTimeout)}\n` +
+          `**Message Delete Logs:** ${statusEmoji(SECURITY.logMessageDelete)}\n` +
+          `**Message Edit Logs:** ${statusEmoji(SECURITY.logMessageEdit)}\n` +
+          `**Join / Leave Logs:** ${statusEmoji(SECURITY.logJoinLeave)}\n` +
+          `**Role Logs:** ${statusEmoji(SECURITY.logRoleChanges)}\n` +
+          `**Ban / Kick Logs:** ${statusEmoji(SECURITY.logBanKick)}\n` +
+          `**Raid Protection:** ${statusEmoji(SECURITY.raidProtection)}\n\n` +
+          `Spam timeout: **${Math.floor(SECURITY.timeoutTime / 1000)} seconds**\n` +
+          `Log channel: <#${SECURITY_LOG_CHANNEL_ID}>`
+        )
+        .setFooter({ text: `Guild ID: ${guildId}` })
+        .setTimestamp()
+    ],
+    components: [row1, row2, row3]
+  };
+}
+
+function statusEmoji(value) {
+  return value ? "✅ Enabled" : "❌ Disabled";
+}
+
+function securityToggleButton(key, label) {
+  return new ButtonBuilder()
+    .setCustomId(`security_toggle_${key}`)
+    .setLabel(`${SECURITY[key] ? "Disable" : "Enable"} ${label}`)
+    .setStyle(SECURITY[key] ? ButtonStyle.Danger : ButtonStyle.Success);
+}
+
+function safeLogChannelId(guild) {
+  return SECURITY_LOG_CHANNEL_ID || guild.systemChannelId || guild.channels.cache.first()?.id;
+}
+
+client.on("voiceStateUpdate", (oldState) => {
+  const queue = musicQueues.get(oldState.guild.id);
+  if (!queue) return;
+
+  const channelId = queue.connection?.joinConfig?.channelId;
+  if (!channelId) return;
+
+  const channel = oldState.guild.channels.cache.get(channelId);
+  if (!channel) return;
+
+  const nonBots = channel.members.filter(m => !m.user.bot);
+
+  if (nonBots.size === 0) {
+    queue.text.send("👋 Everyone left — disconnecting.").catch(() => {});
+    queue.connection?.destroy();
+    musicQueues.delete(oldState.guild.id);
+  }
+});
+
 client.on("messageDelete", async (message) => {
   try {
+    if (!SECURITY.logMessageDelete) return;
     if (!message.guild || message.author?.bot) return;
-    const settings = getSecuritySettings(message.guild.id);
-    if (!settings.messageDelete) return;
 
     await securityLog(message.guild, {
-      title: "🗑️ Message Deleted",
       action: "Message Deleted",
-      user: message.author || null,
+      user: message.author || "Unknown User",
       userId: message.author?.id || "Unknown",
       channel: message.channel,
-      channelId: message.channel?.id,
-      content: message.content || "[Could not read deleted message content]",
+      channelId: message.channel.id,
+      content: message.content || "Message content unavailable.",
       reason: "A message was deleted.",
-      color: "DarkButNotBlack",
-      thumbnail: message.author?.displayAvatarURL?.()
+      color: "Red"
     });
   } catch (err) {
     console.error("messageDelete log error:", err);
@@ -1939,22 +1929,19 @@ client.on("messageDelete", async (message) => {
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
   try {
+    if (!SECURITY.logMessageEdit) return;
     if (!newMessage.guild || newMessage.author?.bot) return;
-    const settings = getSecuritySettings(newMessage.guild.id);
-    if (!settings.messageEdit) return;
     if (oldMessage.content === newMessage.content) return;
 
     await securityLog(newMessage.guild, {
-      title: "✏️ Message Edited",
       action: "Message Edited",
       user: newMessage.author,
       userId: newMessage.author.id,
       channel: newMessage.channel,
       channelId: newMessage.channel.id,
-      content: `Before:\n${oldMessage.content || "[Unknown]"}\n\nAfter:\n${newMessage.content || "[Unknown]"}`,
+      content: `Old: ${oldMessage.content || "Unavailable"}\n\nNew: ${newMessage.content || "Unavailable"}`,
       reason: "A message was edited.",
-      color: "Yellow",
-      thumbnail: newMessage.author.displayAvatarURL()
+      color: "Yellow"
     });
   } catch (err) {
     console.error("messageUpdate log error:", err);
@@ -1963,47 +1950,38 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 
 client.on("guildMemberAdd", async (member) => {
   try {
-    const settings = getSecuritySettings(member.guild.id);
-
-    if (settings.joinLeave) {
+    if (SECURITY.logJoinLeave) {
       await securityLog(member.guild, {
-        title: "📥 Member Joined",
         action: "Member Joined",
         user: member.user,
-        userId: member.id,
-        channel: null,
-        channelId: null,
-        content: null,
-        reason: `Account created: <t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>`,
-        color: "Green",
-        thumbnail: member.user.displayAvatarURL()
+        userId: member.user.id,
+        channel: "Server Join",
+        channelId: safeLogChannelId(member.guild),
+        content: `Account Created: <t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>`,
+        reason: "User joined the server.",
+        color: "Green"
       });
     }
 
-    if (settings.raidProtection) {
-      const now = Date.now();
-      const key = member.guild.id;
+    if (!SECURITY.raidProtection) return;
 
-      const joins = (raidTracker.get(key) || []).filter(time => now - time < SECURITY.raidTime);
-      joins.push(now);
-      raidTracker.set(key, joins);
+    const guildId = member.guild.id;
+    const now = Date.now();
+    const recentJoins = (raidTracker.get(guildId) || []).filter(t => now - t < SECURITY.raidJoinTime);
+    recentJoins.push(now);
+    raidTracker.set(guildId, recentJoins);
 
-      if (joins.length >= SECURITY.raidJoinLimit) {
-        await member.timeout(SECURITY.raidTimeoutTime, "Raid protection: too many joins").catch(() => {});
-
-        await securityLog(member.guild, {
-          title: "🚨 Raid Protection Triggered",
-          action: "New Member Auto-Timed Out",
-          user: member.user,
-          userId: member.id,
-          channel: null,
-          channelId: null,
-          content: null,
-          reason: `${joins.length} users joined within ${SECURITY.raidTime / 1000} seconds.`,
-          color: "DarkRed",
-          thumbnail: member.user.displayAvatarURL()
-        });
-      }
+    if (recentJoins.length >= SECURITY.raidJoinLimit) {
+      await securityLog(member.guild, {
+        action: "Raid Protection Triggered",
+        user: member.user,
+        userId: member.user.id,
+        channel: "Raid Protection",
+        channelId: safeLogChannelId(member.guild),
+        content: `${recentJoins.length} users joined within ${SECURITY.raidJoinTime / 1000} seconds.`,
+        reason: "Possible raid detected.",
+        color: "DarkRed"
+      });
     }
   } catch (err) {
     console.error("guildMemberAdd log error:", err);
@@ -2012,55 +1990,30 @@ client.on("guildMemberAdd", async (member) => {
 
 client.on("guildMemberRemove", async (member) => {
   try {
-    const settings = getSecuritySettings(member.guild.id);
-    if (!settings.joinLeave && !settings.banKick) return;
+    if (!SECURITY.logJoinLeave && !SECURITY.logBanKick) return;
 
-    let kicked = false;
-    let executorText = "Unknown";
+    let action = "Member Left";
+    let reason = "User left the server.";
 
-    if (settings.banKick) {
-      const audit = await member.guild.fetchAuditLogs({
-        type: AuditLogEvent.MemberKick,
-        limit: 1
-      }).catch(() => null);
-
-      const entry = audit?.entries?.first();
-      if (entry && entry.target?.id === member.id && Date.now() - entry.createdTimestamp < 7000) {
-        kicked = true;
-        executorText = entry.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
+    if (SECURITY.logBanKick) {
+      const logs = await member.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick }).catch(() => null);
+      const entry = logs?.entries?.first();
+      if (entry && entry.target?.id === member.user.id && Date.now() - entry.createdTimestamp < 5000) {
+        action = "User Kicked";
+        reason = `Kicked by: ${entry.executor} (${entry.executor.id})\nReason: ${entry.reason || "No reason found."}`;
       }
     }
 
-    if (kicked) {
-      await securityLog(member.guild, {
-        title: "👢 Member Kicked",
-        action: "Member Kicked",
-        user: member.user,
-        userId: member.id,
-        channel: null,
-        channelId: null,
-        content: null,
-        reason: `Executor: ${executorText}`,
-        color: "Orange",
-        thumbnail: member.user.displayAvatarURL()
-      });
-      return;
-    }
-
-    if (settings.joinLeave) {
-      await securityLog(member.guild, {
-        title: "📤 Member Left",
-        action: "Member Left",
-        user: member.user,
-        userId: member.id,
-        channel: null,
-        channelId: null,
-        content: null,
-        reason: "User left the server or was removed.",
-        color: "Grey",
-        thumbnail: member.user.displayAvatarURL()
-      });
-    }
+    await securityLog(member.guild, {
+      action,
+      user: member.user,
+      userId: member.user.id,
+      channel: "Server Leave",
+      channelId: safeLogChannelId(member.guild),
+      content: `${member.user.tag} left or was removed from the server.`,
+      reason,
+      color: action === "User Kicked" ? "Red" : "Orange"
+    });
   } catch (err) {
     console.error("guildMemberRemove log error:", err);
   }
@@ -2068,219 +2021,44 @@ client.on("guildMemberRemove", async (member) => {
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   try {
-    const settings = getSecuritySettings(newMember.guild.id);
-    if (!settings.roleChanges) return;
-
-    const oldRoles = new Set(oldMember.roles.cache.keys());
-    const newRoles = new Set(newMember.roles.cache.keys());
-
-    const added = [...newRoles].filter(roleId => !oldRoles.has(roleId));
-    const removed = [...oldRoles].filter(roleId => !newRoles.has(roleId));
-
-    if (!added.length && !removed.length) return;
-
-    const addedText = added.map(id => `<@&${id}>`).join(", ") || "None";
-    const removedText = removed.map(id => `<@&${id}>`).join(", ") || "None";
-
-    await securityLog(newMember.guild, {
-      title: "🎭 Role Change Logged",
-      action: "Member Roles Updated",
-      user: newMember.user,
-      userId: newMember.id,
-      channel: null,
-      channelId: null,
-      content: `Added Roles: ${addedText}\nRemoved Roles: ${removedText}`,
-      reason: "A member's roles changed.",
-      color: "Purple",
-      thumbnail: newMember.user.displayAvatarURL()
-    });
-  } catch (err) {
-    console.error("guildMemberUpdate log error:", err);
-  }
-});
-
-client.on("guildBanAdd", async (ban) => {
-  try {
-    const settings = getSecuritySettings(ban.guild.id);
-    if (!settings.banKick) return;
-
-    let executorText = "Unknown";
-    const audit = await ban.guild.fetchAuditLogs({
-      type: AuditLogEvent.MemberBanAdd,
-      limit: 1
-    }).catch(() => null);
-
-    const entry = audit?.entries?.first();
-    if (entry && entry.target?.id === ban.user.id && Date.now() - entry.createdTimestamp < 7000) {
-      executorText = entry.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
-    }
-
-    await securityLog(ban.guild, {
-      title: "🔨 Member Banned",
-      action: "Member Banned",
-      user: ban.user,
-      userId: ban.user.id,
-      channel: null,
-      channelId: null,
-      content: null,
-      reason: `Executor: ${executorText}\nReason: ${ban.reason || "No reason provided."}`,
-      color: "Red",
-      thumbnail: ban.user.displayAvatarURL()
-    });
-  } catch (err) {
-    console.error("guildBanAdd log error:", err);
-  }
-});
-
-client.on("guildBanRemove", async (ban) => {
-  try {
-    const settings = getSecuritySettings(ban.guild.id);
-    if (!settings.banKick) return;
-
-    await securityLog(ban.guild, {
-      title: "🔓 Member Unbanned",
-      action: "Member Unbanned",
-      user: ban.user,
-      userId: ban.user.id,
-      channel: null,
-      channelId: null,
-      content: null,
-      reason: "A user was unbanned.",
-      color: "Green",
-      thumbnail: ban.user.displayAvatarURL()
-    });
-  } catch (err) {
-    console.error("guildBanRemove log error:", err);
-  }
-});
-
-client.on("guildMemberUpdate", async (oldMember, newMember) => {
-  try {
     if (!newMember.guild) return;
-
-    const addedRoles = newMember.roles.cache.filter(
-      role => !oldMember.roles.cache.has(role.id)
-    );
-
-    const removedRoles = oldMember.roles.cache.filter(
-      role => !newMember.roles.cache.has(role.id)
-    );
-
-    if (!addedRoles.size && !removedRoles.size) return;
-
-    const logs = await newMember.guild.fetchAuditLogs({
-      limit: 1,
-      type: 25 // MEMBER_ROLE_UPDATE
-    });
-
-    const entry = logs.entries.first();
-
-    let executor = "Unknown";
-
-    if (entry && entry.executor) {
-      executor = `${entry.executor}`;
-    }
-
-    for (const role of addedRoles.values()) {
-      await securityLog(newMember.guild, {
-        action: "Role Added",
-        user: newMember.user,
-        userId: newMember.user.id,
-        channel: "Role System",
-        channelId: newMember.guild.systemChannelId,
-        content: `Role Added: ${role.name}`,
-        reason: `Added by ${executor}`,
-        color: "Green"
-      });
-    }
-
-    for (const role of removedRoles.values()) {
-      await securityLog(newMember.guild, {
-        action: "Role Removed",
-        user: newMember.user,
-        userId: newMember.user.id,
-        channel: "Role System",
-        channelId: newMember.guild.systemChannelId,
-        content: `Role Removed: ${role.name}`,
-        reason: `Removed by ${executor}`,
-        color: "Orange"
-      });
-    }
-
-  } catch (err) {
-    console.error("Role update log error:", err);
-  }
-});
-/* =========================
-   ADVANCED SECURITY LOGGING
-========================= */
-
-// Nickname + timeout + role changes
-client.on("guildMemberUpdate", async (oldMember, newMember) => {
-  try {
-    if (!newMember.guild) return;
-
     const guild = newMember.guild;
-
-    // Fetch audit log
     const logs = await guild.fetchAuditLogs({ limit: 1 }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
-    // NICKNAME CHANGE
-    if (oldMember.nickname !== newMember.nickname) {
+    if (SECURITY.logRoleChanges && oldMember.nickname !== newMember.nickname) {
       await securityLog(guild, {
         action: "Nickname Updated",
         user: newMember.user,
         userId: newMember.user.id,
-        channel: "Server Member Update",
-        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
-        content:
-          `Old Nickname: ${oldMember.nickname || oldMember.user.username}\n` +
-          `New Nickname: ${newMember.nickname || newMember.user.username}`,
+        channel: "Member Update",
+        channelId: safeLogChannelId(guild),
+        content: `Old Nickname: ${oldMember.nickname || oldMember.user.username}\nNew Nickname: ${newMember.nickname || newMember.user.username}`,
         reason: `Updated by: ${executor}`,
         color: "Blue"
       });
     }
 
-    // TIMEOUT / UNTIMEOUT
     const oldTimeout = oldMember.communicationDisabledUntilTimestamp;
     const newTimeout = newMember.communicationDisabledUntilTimestamp;
-
-    if (oldTimeout !== newTimeout) {
-      if (newTimeout && newTimeout > Date.now()) {
-        await securityLog(guild, {
-          action: "User Timed Out",
-          user: newMember.user,
-          userId: newMember.user.id,
-          channel: "Moderation",
-          channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
-          content: `Timeout Until: <t:${Math.floor(newTimeout / 1000)}:F>`,
-          reason: `Timed out by: ${executor}`,
-          color: "Red"
-        });
-      } else {
-        await securityLog(guild, {
-          action: "User Untimed Out",
-          user: newMember.user,
-          userId: newMember.user.id,
-          channel: "Moderation",
-          channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
-          content: "Timeout was removed.",
-          reason: `Removed by: ${executor}`,
-          color: "Green"
-        });
-      }
+    if (SECURITY.logBanKick && oldTimeout !== newTimeout) {
+      await securityLog(guild, {
+        action: newTimeout && newTimeout > Date.now() ? "User Timed Out" : "User Untimed Out",
+        user: newMember.user,
+        userId: newMember.user.id,
+        channel: "Moderation",
+        channelId: safeLogChannelId(guild),
+        content: newTimeout && newTimeout > Date.now() ? `Timeout Until: <t:${Math.floor(newTimeout / 1000)}:F>` : "Timeout was removed.",
+        reason: `Updated by: ${executor}`,
+        color: newTimeout && newTimeout > Date.now() ? "Red" : "Green"
+      });
     }
 
-    // ROLE ADDED / REMOVED
-    const addedRoles = newMember.roles.cache.filter(
-      role => !oldMember.roles.cache.has(role.id)
-    );
+    if (!SECURITY.logRoleChanges) return;
 
-    const removedRoles = oldMember.roles.cache.filter(
-      role => !newMember.roles.cache.has(role.id)
-    );
+    const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
+    const removedRoles = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id));
 
     for (const role of addedRoles.values()) {
       await securityLog(guild, {
@@ -2288,7 +2066,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         user: newMember.user,
         userId: newMember.user.id,
         channel: "Role Update",
-        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+        channelId: safeLogChannelId(guild),
         content: `Role Added: ${role.name}\nRole ID: ${role.id}`,
         reason: `Added by: ${executor}`,
         color: "Green"
@@ -2301,22 +2079,21 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         user: newMember.user,
         userId: newMember.user.id,
         channel: "Role Update",
-        channelId: guild.systemChannelId || newMember.guild.channels.cache.first()?.id,
+        channelId: safeLogChannelId(guild),
         content: `Role Removed: ${role.name}\nRole ID: ${role.id}`,
         reason: `Removed by: ${executor}`,
         color: "Orange"
       });
     }
-
   } catch (err) {
     console.error("guildMemberUpdate log error:", err);
   }
 });
 
-// ROLE CREATED
 client.on("roleCreate", async (role) => {
   try {
-    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: 30 }).catch(() => null);
+    if (!SECURITY.logRoleChanges) return;
+    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleCreate }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2325,12 +2102,8 @@ client.on("roleCreate", async (role) => {
       user: entry?.executor || role.guild.members.me.user,
       userId: entry?.executor?.id || role.guild.members.me.id,
       channel: "Role System",
-      channelId: role.guild.systemChannelId || role.guild.channels.cache.first()?.id,
-      content:
-        `Role Name: ${role.name}\n` +
-        `Role ID: ${role.id}\n` +
-        `Color: ${role.hexColor}\n` +
-        `Mentionable: ${role.mentionable}`,
+      channelId: safeLogChannelId(role.guild),
+      content: `Role Name: ${role.name}\nRole ID: ${role.id}\nColor: ${role.hexColor}\nMentionable: ${role.mentionable}`,
       reason: `Created by: ${executor}`,
       color: "Green"
     });
@@ -2339,10 +2112,10 @@ client.on("roleCreate", async (role) => {
   }
 });
 
-// ROLE DELETED
 client.on("roleDelete", async (role) => {
   try {
-    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: 32 }).catch(() => null);
+    if (!SECURITY.logRoleChanges) return;
+    const logs = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2351,10 +2124,8 @@ client.on("roleDelete", async (role) => {
       user: entry?.executor || role.guild.members.me.user,
       userId: entry?.executor?.id || role.guild.members.me.id,
       channel: "Role System",
-      channelId: role.guild.systemChannelId || role.guild.channels.cache.first()?.id,
-      content:
-        `Deleted Role: ${role.name}\n` +
-        `Role ID: ${role.id}`,
+      channelId: safeLogChannelId(role.guild),
+      content: `Deleted Role: ${role.name}\nRole ID: ${role.id}`,
       reason: `Deleted by: ${executor}`,
       color: "Red"
     });
@@ -2363,26 +2134,19 @@ client.on("roleDelete", async (role) => {
   }
 });
 
-// ROLE PERMISSION CHANGE
 client.on("roleUpdate", async (oldRole, newRole) => {
   try {
-    const oldPerms = oldRole.permissions.bitfield;
-    const newPerms = newRole.permissions.bitfield;
+    if (!SECURITY.logRoleChanges) return;
+    if (oldRole.permissions.bitfield === newRole.permissions.bitfield && oldRole.name === newRole.name) return;
 
-    if (oldPerms === newPerms && oldRole.name === newRole.name) return;
-
-    const logs = await newRole.guild.fetchAuditLogs({ limit: 1, type: 31 }).catch(() => null);
+    const logs = await newRole.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleUpdate }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
     let changes = "";
-
-    if (oldRole.name !== newRole.name) {
-      changes += `Name Changed: ${oldRole.name} → ${newRole.name}\n`;
-    }
-
-    if (oldPerms !== newPerms) {
-      changes += `Permissions Updated.\nOld Permissions Bitfield: ${oldPerms}\nNew Permissions Bitfield: ${newPerms}`;
+    if (oldRole.name !== newRole.name) changes += `Name Changed: ${oldRole.name} → ${newRole.name}\n`;
+    if (oldRole.permissions.bitfield !== newRole.permissions.bitfield) {
+      changes += `Permissions Updated.\nOld Permissions Bitfield: ${oldRole.permissions.bitfield}\nNew Permissions Bitfield: ${newRole.permissions.bitfield}`;
     }
 
     await securityLog(newRole.guild, {
@@ -2390,7 +2154,7 @@ client.on("roleUpdate", async (oldRole, newRole) => {
       user: entry?.executor || newRole.guild.members.me.user,
       userId: entry?.executor?.id || newRole.guild.members.me.id,
       channel: "Role Permissions",
-      channelId: newRole.guild.systemChannelId || newRole.guild.channels.cache.first()?.id,
+      channelId: safeLogChannelId(newRole.guild),
       content: changes || "Role was updated.",
       reason: `Updated by: ${executor}`,
       color: "Yellow"
@@ -2400,12 +2164,10 @@ client.on("roleUpdate", async (oldRole, newRole) => {
   }
 });
 
-// CHANNEL CREATED
 client.on("channelCreate", async (channel) => {
   try {
-    if (!channel.guild) return;
-
-    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: 10 }).catch(() => null);
+    if (!SECURITY.logRoleChanges || !channel.guild) return;
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelCreate }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2415,10 +2177,7 @@ client.on("channelCreate", async (channel) => {
       userId: entry?.executor?.id || channel.guild.members.me.id,
       channel: channel,
       channelId: channel.id,
-      content:
-        `Channel Name: ${channel.name}\n` +
-        `Channel ID: ${channel.id}\n` +
-        `Type: ${channel.type}`,
+      content: `Channel Name: ${channel.name}\nChannel ID: ${channel.id}\nType: ${channel.type}`,
       reason: `Created by: ${executor}`,
       color: "Green"
     });
@@ -2427,12 +2186,10 @@ client.on("channelCreate", async (channel) => {
   }
 });
 
-// CHANNEL DELETED
 client.on("channelDelete", async (channel) => {
   try {
-    if (!channel.guild) return;
-
-    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: 12 }).catch(() => null);
+    if (!SECURITY.logRoleChanges || !channel.guild) return;
+    const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2441,11 +2198,8 @@ client.on("channelDelete", async (channel) => {
       user: entry?.executor || channel.guild.members.me.user,
       userId: entry?.executor?.id || channel.guild.members.me.id,
       channel: "Deleted Channel",
-      channelId: channel.guild.systemChannelId || channel.guild.channels.cache.first()?.id,
-      content:
-        `Deleted Channel Name: ${channel.name}\n` +
-        `Channel ID: ${channel.id}\n` +
-        `Type: ${channel.type}`,
+      channelId: safeLogChannelId(channel.guild),
+      content: `Deleted Channel Name: ${channel.name}\nChannel ID: ${channel.id}\nType: ${channel.type}`,
       reason: `Deleted by: ${executor}`,
       color: "Red"
     });
@@ -2454,29 +2208,17 @@ client.on("channelDelete", async (channel) => {
   }
 });
 
-// CHANNEL PERMISSION / SETTINGS CHANGE
 client.on("channelUpdate", async (oldChannel, newChannel) => {
   try {
-    if (!newChannel.guild) return;
-
-    const logs = await newChannel.guild.fetchAuditLogs({ limit: 1, type: 11 }).catch(() => null);
+    if (!SECURITY.logRoleChanges || !newChannel.guild) return;
+    const logs = await newChannel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelUpdate }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
     let changes = "";
-
-    if (oldChannel.name !== newChannel.name) {
-      changes += `Name Changed: ${oldChannel.name} → ${newChannel.name}\n`;
-    }
-
-    if (oldChannel.permissionOverwrites.cache.size !== newChannel.permissionOverwrites.cache.size) {
-      changes += "Permission overwrites changed.\n";
-    }
-
-    if (oldChannel.topic !== newChannel.topic) {
-      changes += `Topic Changed:\nOld: ${oldChannel.topic || "None"}\nNew: ${newChannel.topic || "None"}\n`;
-    }
-
+    if (oldChannel.name !== newChannel.name) changes += `Name Changed: ${oldChannel.name} → ${newChannel.name}\n`;
+    if (oldChannel.permissionOverwrites.cache.size !== newChannel.permissionOverwrites.cache.size) changes += "Permission overwrites changed.\n";
+    if (oldChannel.topic !== newChannel.topic) changes += `Topic Changed:\nOld: ${oldChannel.topic || "None"}\nNew: ${newChannel.topic || "None"}\n`;
     if (!changes) changes = "Channel settings or permissions were updated.";
 
     await securityLog(newChannel.guild, {
@@ -2494,10 +2236,10 @@ client.on("channelUpdate", async (oldChannel, newChannel) => {
   }
 });
 
-// BAN LOGGING
 client.on("guildBanAdd", async (ban) => {
   try {
-    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: 22 }).catch(() => null);
+    if (!SECURITY.logBanKick) return;
+    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanAdd }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2506,7 +2248,7 @@ client.on("guildBanAdd", async (ban) => {
       user: ban.user,
       userId: ban.user.id,
       channel: "Moderation",
-      channelId: ban.guild.systemChannelId || ban.guild.channels.cache.first()?.id,
+      channelId: safeLogChannelId(ban.guild),
       content: `Banned User: ${ban.user.tag}`,
       reason: `Banned by: ${executor}\nReason: ${ban.reason || "No reason found."}`,
       color: "Red"
@@ -2516,10 +2258,10 @@ client.on("guildBanAdd", async (ban) => {
   }
 });
 
-// UNBAN LOGGING
 client.on("guildBanRemove", async (ban) => {
   try {
-    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: 23 }).catch(() => null);
+    if (!SECURITY.logBanKick) return;
+    const logs = await ban.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberBanRemove }).catch(() => null);
     const entry = logs?.entries?.first();
     const executor = entry?.executor ? `${entry.executor} (${entry.executor.id})` : "Unknown";
 
@@ -2528,7 +2270,7 @@ client.on("guildBanRemove", async (ban) => {
       user: ban.user,
       userId: ban.user.id,
       channel: "Moderation",
-      channelId: ban.guild.systemChannelId || ban.guild.channels.cache.first()?.id,
+      channelId: safeLogChannelId(ban.guild),
       content: `Unbanned User: ${ban.user.tag}`,
       reason: `Unbanned by: ${executor}`,
       color: "Green"
