@@ -1,17 +1,18 @@
 {
-  "name": "discord-bot",
+  "name": "discord-bot-complete-fixed",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@discordjs/voice": "latest",
     "discord.js": "latest",
-    "dotenv": "latest",
+    "@discordjs/voice": "latest",
+    "@distube/ytdl-core": "latest",
+    "yt-search": "latest",
     "ffmpeg-static": "latest",
+    "prism-media": "latest",
     "libsodium-wrappers": "latest",
-    "play-dl": "latest",
-    "prism-media": "latest"
+    "dotenv": "latest"
   }
 }
