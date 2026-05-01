@@ -1,20 +1,17 @@
 {
-  "name": "full-discord-bot",
+  "name": "discord-bot",
   "version": "1.0.0",
-  "description": "Discord bot with economy, casino, moderation, security, music, snipes, and VoiceMaster.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
-    "discord.js": "^14.18.0",
-    "dotenv": "^16.4.7",
-    "play-dl": "^1.9.7",
-    "libsodium-wrappers": "^0.7.15",
-    "ffmpeg-static": "^5.2.0"
-  },
-  "engines": {
-    "node": ">=20"
+    "@discordjs/voice": "latest",
+    "discord.js": "latest",
+    "dotenv": "latest",
+    "ffmpeg-static": "latest",
+    "libsodium-wrappers": "latest",
+    "play-dl": "latest",
+    "prism-media": "latest"
   }
 }
