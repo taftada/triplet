@@ -2,11 +2,12 @@
   "name": "discord-bot-full-soundtest",
   "version": "1.0.0",
   "main": "index.js",
-
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "start": "node index.js"
   },
-
   "dependencies": {
     "@discordjs/voice": "latest",
     "@discordjs/opus": "latest",
