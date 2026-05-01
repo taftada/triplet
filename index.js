@@ -475,6 +475,15 @@ async function playNext(
   );
 }
 
-client.login(
-  process.env.DISCORD_TOKEN
-);
+const TOKEN = process.env.DISCORD_TOKEN?.trim();
+
+if (!TOKEN) {
+  console.error("❌ Missing DISCORD_TOKEN in Railway variables.");
+  process.exit(1);
+}
+
+client.login(TOKEN).catch(err => {
+  console.error("❌ Discord login failed.");
+  console.error(err.message);
+  process.exit(1);
+});
