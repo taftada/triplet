@@ -1,18 +1,18 @@
 {
-  "name": "discord-bot-complete-fixed",
+  "name": "discord-bot-full-soundtest",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "latest",
     "@discordjs/voice": "latest",
     "@distube/ytdl-core": "latest",
-    "yt-search": "latest",
+    "discord.js": "latest",
+    "dotenv": "latest",
     "ffmpeg-static": "latest",
-    "prism-media": "latest",
     "libsodium-wrappers": "latest",
-    "dotenv": "latest"
+    "prism-media": "latest",
+    "yt-search": "latest"
   }
 }
