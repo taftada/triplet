@@ -22,7 +22,10 @@ const {
   createAudioResource,
   AudioPlayerStatus,
   NoSubscriberBehavior,
-  getVoiceConnection
+  getVoiceConnection,
+  StreamType,
+  VoiceConnectionStatus,
+  entersState
 } = require("@discordjs/voice");
 
 const ytdl = require("@distube/ytdl-core");
@@ -1300,6 +1303,7 @@ async function playNext(guildId) {
   if (!queue) return;
 
   const song = queue.songs.shift();
+
   if (!song) {
     queue.nowPlaying = null;
     queue.playing = false;
@@ -1322,22 +1326,30 @@ async function playNext(guildId) {
     queue.nowPlaying = song;
     queue.playing = true;
 
+    await entersState(queue.connection, VoiceConnectionStatus.Ready, 20_000);
+
     const stream = ytdl(song.url, {
       filter: "audioonly",
       quality: "highestaudio",
       highWaterMark: 1 << 25,
-      liveBuffer: 1 << 25
+      liveBuffer: 4000,
+      dlChunkSize: 0
     });
 
     stream.on("error", err => {
-      console.error("YouTube stream error:", err.message);
-      queue.playing = false;
-      queue.nowPlaying = null;
-      playNext(guildId);
+      console.error("YTDL STREAM ERROR:", err.message);
     });
 
-    const resource = createAudioResource(stream);
+    const resource = createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true
+    });
+
+    if (resource.volume) resource.volume.setVolume(1);
+
     queue.player.play(resource);
+
+    console.log("NOW PLAYING:", song.title);
 
     const thumbnail = song.thumbnail || "https://cdn-icons-png.flaticon.com/512/727/727245.png";
 
@@ -1363,7 +1375,7 @@ async function playNext(guildId) {
       ]
     }).catch(() => {});
   } catch (err) {
-    console.error("playNext error:", err);
+    console.error("PLAY NEXT ERROR:", err.message || err);
     queue.playing = false;
     queue.nowPlaying = null;
     playNext(guildId);
