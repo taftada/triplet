@@ -1,23 +1,20 @@
 {
-  "name": "discord-bot-full-soundtest",
+  "name": "discord-bot-lavalink",
   "version": "1.0.0",
+  "description": "Triplet Discord bot with economy, casino, moderation, security, VoiceMaster, and Lavalink music",
   "main": "index.js",
+
   "engines": {
     "node": "20.x"
   },
+
   "scripts": {
     "start": "node index.js"
   },
+
   "dependencies": {
-    "@discordjs/voice": "latest",
-    "@discordjs/opus": "latest",
-    "@distube/ytdl-core": "latest",
     "discord.js": "latest",
     "dotenv": "latest",
-    "ffmpeg-static": "latest",
-    "libsodium-wrappers": "latest",
-    "opusscript": "latest",
-    "prism-media": "latest",
-    "yt-search": "latest"
+    "lavalink-client": "latest"
   }
 }

@@ -16,20 +16,7 @@ const {
   ChannelType
 } = require("discord.js");
 
-const {
-  joinVoiceChannel,
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  NoSubscriberBehavior,
-  getVoiceConnection,
-  StreamType,
-  VoiceConnectionStatus,
-  entersState
-} = require("@discordjs/voice");
-
-const ytdl = require("@distube/ytdl-core");
-const yts = require("yt-search");
+const { LavalinkManager } = require("lavalink-client");
 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 
@@ -94,6 +81,66 @@ const client = new Client({
     Partials.User,
     Partials.GuildMember
   ]
+});
+
+client.lavalink = new LavalinkManager({
+  nodes: [
+    {
+      id: process.env.LAVALINK_ID || "main",
+      host: process.env.LAVALINK_HOST || "localhost",
+      port: Number(process.env.LAVALINK_PORT || 2333),
+      authorization: process.env.LAVALINK_PASSWORD || "youshallnotpass",
+      secure: String(process.env.LAVALINK_SECURE || "false").toLowerCase() === "true"
+    }
+  ],
+  sendToShard: (guildId, payload) => client.guilds.cache.get(guildId)?.shard?.send(payload),
+  client: {
+    id: process.env.CLIENT_ID || "",
+    username: "Triplet"
+  },
+  autoSkip: true,
+  playerOptions: {
+    defaultSearchPlatform: "ytmsearch",
+    onEmptyQueue: {
+      destroyAfterMs: 30_000
+    },
+    onDisconnect: {
+      autoReconnect: true,
+      destroyPlayer: false
+    }
+  },
+  queueOptions: {
+    maxPreviousTracks: 25
+  }
+});
+
+client.on("raw", data => client.lavalink.sendRawData(data));
+
+client.lavalink.on("nodeConnect", node => {
+  console.log(`Lavalink node connected: ${node.id}`);
+});
+
+client.lavalink.on("nodeError", (node, error) => {
+  console.error(`Lavalink node error on ${node.id}:`, error?.message || error);
+});
+
+client.lavalink.on("trackStart", (player, track) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  channel?.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor("Green")
+        .setTitle("Now Playing")
+        .setDescription(`**${track.info.title}**`)
+        .setURL(track.info.uri || null)
+    ],
+    components: [musicButtons()]
+  }).catch(() => {});
+});
+
+client.lavalink.on("queueEnd", player => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  channel?.send("Queue ended. Leaving VC soon.").catch(() => {});
 });
 
 const musicQueues = new Map();
@@ -282,8 +329,11 @@ async function securityLog(guild, data) {
   channel.send({ embeds: [embed] }).catch(() => {});
 }
 
-client.once("ready", () => {
+client.once("clientReady", async () => {
   console.log(`Bot online as ${client.user.tag}`);
+  client.lavalink.options.client.id = client.user.id;
+  client.lavalink.options.client.username = client.user.username;
+  await client.lavalink.init({ id: client.user.id, username: client.user.username });
 });
 
 client.on("messageDelete", async message => {
@@ -1031,40 +1081,7 @@ Level 5: CEO — $4,000
       return message.reply("Use `?vc name`, `?vc limit`, `?vc lock`, `?vc unlock`, `?vc claim`, `?vc kick`, or `?vc delete`.");
     }
 
-    if (command === "soundtest") {
-      const voice = message.member.voice.channel;
-      if (!voice) return message.reply("Join VC first.");
 
-      const connection = joinVoiceChannel({
-        channelId: voice.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-        selfDeaf: false
-      });
-
-      const player = createAudioPlayer({
-        behaviors: { noSubscriber: NoSubscriberBehavior.Play }
-      });
-
-      await entersState(connection, VoiceConnectionStatus.Ready, 20000);
-
-      const resource = createAudioResource(
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-        {
-          inputType: StreamType.Arbitrary,
-          inlineVolume: true
-        }
-      );
-
-      resource.volume.setVolume(1);
-      connection.subscribe(player);
-      player.play(resource);
-
-      player.on("error", err => console.error("SOUNDTEST PLAYER ERROR:", err.message));
-      console.log("SOUNDTEST STARTED");
-
-      return message.reply("Playing sound test. If this is silent, the problem is Railway/permissions/audio packages.");
-    }
 
     if (command === "play" || command === "p") {
       const query = args.join(" ");
@@ -1073,219 +1090,93 @@ Level 5: CEO — $4,000
       const voice = message.member.voice.channel;
       if (!voice) return message.reply("Join a voice channel first.");
 
-      let queue = musicQueues.get(message.guild.id);
-
-      if (!queue) {
-        const player = createAudioPlayer({
-          behaviors: {
-            noSubscriber: NoSubscriberBehavior.Play
-          }
-        });
-
-        queue = {
-          player,
-          songs: [],
-          connection: null,
-          textChannel: message.channel,
-          playing: false
-        };
-
-        musicQueues.set(message.guild.id, queue);
-
-        player.on(AudioPlayerStatus.Idle, () => {
-          queue.playing = false;
-          playNext(message.guild.id);
-        });
-
-        player.on("error", err => {
-          console.error("MUSIC PLAYER ERROR:", err.message);
-          queue.playing = false;
-          playNext(message.guild.id);
-        });
-      }
-
-      queue.textChannel = message.channel;
-
-      queue.connection = joinVoiceChannel({
-        channelId: voice.id,
+      const player = await client.lavalink.createPlayer({
         guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-        selfDeaf: false
+        voiceChannelId: voice.id,
+        textChannelId: message.channel.id,
+        selfDeaf: true,
+        selfMute: false,
+        volume: 100
       });
 
-      queue.connection.subscribe(queue.player);
+      await player.connect();
 
-      let song;
+      const res = await player.search(
+        {
+          query,
+          source: "ytmsearch"
+        },
+        message.author
+      );
 
-      if (ytdl.validateURL(query)) {
-        const info = await ytdl.getInfo(query);
-        song = {
-          title: info.videoDetails.title,
-          url: info.videoDetails.video_url,
-          requestedBy: message.author.id,
-          thumbnail: info.videoDetails.thumbnails?.at(-1)?.url || null
-        };
-      } else {
-        const results = await yts(query);
-        const video = results.videos[0];
-
-        if (!video) return message.reply("No song found.");
-
-        song = {
-          title: video.title,
-          url: video.url,
-          requestedBy: message.author.id,
-          thumbnail: video.thumbnail || null
-        };
+      if (!res || !res.tracks || !res.tracks.length) {
+        return message.reply("No song found.");
       }
 
-      queue.songs.push(song);
+      const track = res.tracks[0];
+      await player.queue.add(track);
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setEmoji("▶️").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger)
-      );
+      const row = musicButtons();
 
       await message.reply({
         embeds: [
           new EmbedBuilder()
             .setColor("Green")
             .setTitle("Queued")
-            .setDescription(`**${song.title}**`)
-            .setThumbnail(song.thumbnail)
+            .setDescription(`**${track.info.title}**`)
+            .setURL(track.info.uri || null)
         ],
         components: [row]
       });
 
-      if (!queue.playing) {
-        playNext(message.guild.id);
+      if (!player.playing && !player.paused) {
+        await player.play();
       }
 
       return;
     }
 
+
     if (command === "pause") {
-      const q = musicQueues.get(message.guild.id);
-      if (!q) return message.reply("Nothing playing.");
-      q.player.pause();
+      const player = client.lavalink.getPlayer(message.guild.id);
+      if (!player) return message.reply("Nothing playing.");
+      await player.pause();
       return message.reply("Paused.");
     }
 
     if (command === "resume") {
-      const q = musicQueues.get(message.guild.id);
-      if (!q) return message.reply("Nothing playing.");
-      q.player.unpause();
+      const player = client.lavalink.getPlayer(message.guild.id);
+      if (!player) return message.reply("Nothing playing.");
+      await player.resume();
       return message.reply("Resumed.");
     }
 
     if (command === "skip") {
-      const q = musicQueues.get(message.guild.id);
-      if (!q) return message.reply("Nothing playing.");
-      q.player.stop();
+      const player = client.lavalink.getPlayer(message.guild.id);
+      if (!player) return message.reply("Nothing playing.");
+      await player.skip();
       return message.reply("Skipped.");
     }
 
     if (command === "stop") {
-      const q = musicQueues.get(message.guild.id);
-      if (!q) return message.reply("Nothing playing.");
-
-      q.songs = [];
-      q.playing = false;
-      q.player.stop();
-      getVoiceConnection(message.guild.id)?.destroy();
-      musicQueues.delete(message.guild.id);
-
+      const player = client.lavalink.getPlayer(message.guild.id);
+      if (!player) return message.reply("Nothing playing.");
+      await player.destroy();
       return message.reply("Stopped music.");
     }
 
     if (command === "queue") {
-      const q = musicQueues.get(message.guild.id);
-      if (!q || (!q.songs.length && !q.playing)) return message.reply("Queue empty.");
-      return message.reply(q.songs.slice(0, 10).map((s, i) => `**${i + 1}.** ${s.title}`).join("\n") || "Nothing queued after the current song.");
+      const player = client.lavalink.getPlayer(message.guild.id);
+      if (!player || !player.queue?.tracks?.length) return message.reply("Queue empty.");
+      const tracks = player.queue.tracks.slice(0, 10);
+      return message.reply(tracks.map((t, i) => `**${i + 1}.** ${t.info.title}`).join("\n"));
     }
+
   } catch (err) {
     console.error("messageCreate error:", err);
     return message.reply("Something broke. Check Railway logs.").catch(() => {});
   }
 });
-
-async function playNext(guildId) {
-  const queue = musicQueues.get(guildId);
-  if (!queue) return;
-
-  const song = queue.songs.shift();
-
-  if (!song) {
-    queue.playing = false;
-
-    setTimeout(() => {
-      const currentQueue = musicQueues.get(guildId);
-      if (!currentQueue) return;
-
-      if (!currentQueue.playing && currentQueue.songs.length === 0) {
-        currentQueue.textChannel.send("Leaving VC — queue empty.").catch(() => {});
-        currentQueue.connection?.destroy();
-        musicQueues.delete(guildId);
-      }
-    }, AUTO_DISCONNECT_TIME);
-
-    return;
-  }
-
-  try {
-    queue.playing = true;
-
-    await entersState(queue.connection, VoiceConnectionStatus.Ready, 20000);
-
-    const stream = ytdl(song.url, {
-      filter: "audioonly",
-      quality: "highestaudio",
-      highWaterMark: 1 << 25,
-      liveBuffer: 4000,
-      dlChunkSize: 0
-    });
-
-    stream.on("error", err => {
-      console.error("YTDL STREAM ERROR:", err.message);
-    });
-
-    const resource = createAudioResource(stream, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true
-    });
-
-    resource.volume.setVolume(1);
-
-    queue.player.play(resource);
-
-    console.log("NOW PLAYING:", song.title);
-
-    queue.textChannel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor("Green")
-          .setTitle("Now Playing")
-          .setDescription(`**${song.title}**\nRequested by <@${song.requestedBy}>`)
-          .setURL(song.url)
-          .setThumbnail(song.thumbnail)
-      ],
-      components: [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setEmoji("▶️").setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger)
-        )
-      ]
-    }).catch(() => {});
-  } catch (err) {
-    console.error("PLAY NEXT ERROR:", err.message);
-    queue.playing = false;
-    playNext(guildId);
-  }
-}
 
 client.on("interactionCreate", async interaction => {
   try {
@@ -1616,31 +1507,36 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
+
     if (interaction.isButton() && interaction.customId.startsWith("music:")) {
-      const q = musicQueues.get(interaction.guild.id);
-      if (!q) return interaction.reply({ content: "Nothing playing.", ephemeral: true });
+      const player = client.lavalink.getPlayer(interaction.guild.id);
+      if (!player) return interaction.reply({ content: "Nothing playing.", ephemeral: true });
 
       const action = interaction.customId.split(":")[1];
 
-      if (action === "pause") q.player.pause();
-      if (action === "resume") q.player.unpause();
-      if (action === "skip") q.player.stop();
-
-      if (action === "stop") {
-        q.songs = [];
-        q.playing = false;
-        q.player.stop();
-        getVoiceConnection(interaction.guild.id)?.destroy();
-        musicQueues.delete(interaction.guild.id);
-      }
+      if (action === "pause") await player.pause();
+      if (action === "resume") await player.resume();
+      if (action === "skip") await player.skip();
+      if (action === "stop") await player.destroy();
 
       return interaction.reply({ content: "Done.", ephemeral: true });
     }
+
   } catch (err) {
     console.error("interactionCreate error:", err);
     return interaction.reply({ content: "Something broke.", ephemeral: true }).catch(() => {});
   }
 });
+
+
+function musicButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("music:pause").setLabel("Pause").setEmoji("⏸️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("music:resume").setLabel("Resume").setEmoji("▶️").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("music:skip").setLabel("Skip").setEmoji("⏭️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("music:stop").setLabel("Stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger)
+  );
+}
 
 client.login(TOKEN).catch(err => {
   console.error("Discord login failed. Check DISCORD_TOKEN.");
